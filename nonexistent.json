@@ -1,0 +1,8 @@
+{
+  "github_token": "",
+  "gitlab_token": "",
+  "codeberg_token": "",
+  "sourcehut": {
+    "repositories": []
+  }
+}

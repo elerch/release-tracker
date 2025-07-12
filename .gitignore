@@ -1,0 +1,5 @@
+.zig-cache/
+releases.xml
+config.json
+zig-out/
+.kiro/

@@ -1,0 +1,42 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Release Tracker Configuration",
+  "type": "object",
+  "properties": {
+    "github_token": {
+      "type": "string",
+      "description": "GitHub Personal Access Token"
+    },
+    "gitlab_token": {
+      "type": "string", 
+      "description": "GitLab Personal Access Token"
+    },
+    "codeberg_token": {
+      "type": "string",
+      "description": "Codeberg Access Token"
+    },
+    "sourcehut": {
+      "type": "object",
+      "properties": {
+        "token": {
+          "type": "string",
+          "description": "SourceHut Personal Access Token (optional, for private repos)"
+        },
+        "repositories": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "List of SourceHut repository names (e.g., ~user/repo)"
+        }
+      },
+      "required": ["repositories"],
+      "additionalProperties": false
+    },
+    "last_check": {
+      "type": ["string", "null"],
+      "description": "Timestamp of last check"
+    }
+  },
+  "additionalProperties": false
+}
