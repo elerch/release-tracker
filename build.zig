@@ -6,12 +6,20 @@ pub fn build(b: *std.Build) void {
     const integration = b.option(bool, "integration", "Run integration tests") orelse false;
     const provider = b.option([]const u8, "provider", "Test specific provider (github, gitlab, codeberg, sourcehut)");
 
+    // Add Zeit dependency
+    const zeit_dep = b.dependency("zeit", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
     const exe = b.addExecutable(.{
         .name = "release-tracker",
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
     });
+
+    exe.root_module.addImport("zeit", zeit_dep.module("zeit"));
 
     b.installArtifact(exe);
 
@@ -31,6 +39,8 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    unit_tests.root_module.addImport("zeit", zeit_dep.module("zeit"));
+
     const run_unit_tests = b.addRunArtifact(unit_tests);
 
     const test_step = b.step("test", "Run unit tests");
@@ -44,6 +54,8 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
         });
+
+        integration_tests.root_module.addImport("zeit", zeit_dep.module("zeit"));
 
         // Add filter for specific provider if specified
         if (provider) |p| {
@@ -68,6 +80,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .filters = &[_][]const u8{"GitHub provider"},
     });
+    github_tests.root_module.addImport("zeit", zeit_dep.module("zeit"));
 
     const gitlab_tests = b.addTest(.{
         .name = "gitlab-tests",
@@ -76,6 +89,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .filters = &[_][]const u8{"GitLab provider"},
     });
+    gitlab_tests.root_module.addImport("zeit", zeit_dep.module("zeit"));
 
     const codeberg_tests = b.addTest(.{
         .name = "codeberg-tests",
@@ -84,6 +98,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .filters = &[_][]const u8{"Codeberg provider"},
     });
+    codeberg_tests.root_module.addImport("zeit", zeit_dep.module("zeit"));
 
     const sourcehut_tests = b.addTest(.{
         .name = "sourcehut-tests",
@@ -92,6 +107,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .filters = &[_][]const u8{"SourceHut provider"},
     });
+    sourcehut_tests.root_module.addImport("zeit", zeit_dep.module("zeit"));
 
     github_step.dependOn(&b.addRunArtifact(github_tests).step);
     gitlab_step.dependOn(&b.addRunArtifact(gitlab_tests).step);

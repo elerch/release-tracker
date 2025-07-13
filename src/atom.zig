@@ -1,6 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
+const zeit = @import("zeit");
 
 const Release = @import("main.zig").Release;
 
@@ -22,9 +23,11 @@ pub fn generateFeed(allocator: Allocator, releases: []const Release) ![]u8 {
         \\
     );
 
-    // Add current timestamp in ISO 8601 format
-    const timestamp = std.time.timestamp();
-    try writer.print("<updated>{d}-01-01T00:00:00Z</updated>\n", .{1970 + @divTrunc(timestamp, 31536000)});
+    // Add current timestamp in proper ISO 8601 format using zeit
+    const now = zeit.instant(.{}) catch zeit.instant(.{ .source = .now }) catch unreachable;
+    const updated_str = try std.fmt.allocPrint(allocator, "{}", .{now});
+    defer allocator.free(updated_str);
+    try writer.print("<updated>{s}</updated>\n", .{updated_str});
 
     // Add entries
     for (releases) |release| {
