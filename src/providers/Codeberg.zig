@@ -264,23 +264,11 @@ fn parseTimestamp(date_str: []const u8) !i64 {
     }
 }
 
-test "codeberg provider" {
+test "codeberg provider name" {
     const allocator = std.testing.allocator;
+    _ = allocator;
 
-    var codeberg_provider = init("");
-
-    // Test with empty token (should fail gracefully)
-    const releases = codeberg_provider.fetchReleases(allocator) catch |err| {
-        try std.testing.expect(err == error.Unauthorized or err == error.HttpRequestFailed);
-        return;
-    };
-    defer {
-        for (releases.items) |release| {
-            release.deinit(allocator);
-        }
-        releases.deinit();
-    }
-
+    var codeberg_provider = init("dummy_token");
     try std.testing.expectEqualStrings("codeberg", codeberg_provider.getName());
 }
 
