@@ -71,6 +71,7 @@ pub fn main() !u8 {
     }
 
     const config_path = args[1];
+    const output_file = if (args.len >= 3) args[2] else "releases.xml";
     var app_config = config.loadConfig(allocator, config_path) catch |err| {
         print("Error loading config: {}\n", .{err});
         return 1;
@@ -78,7 +79,7 @@ pub fn main() !u8 {
     defer app_config.deinit();
 
     // Load existing Atom feed to get current releases
-    var existing_releases = loadExistingReleases(allocator) catch ArrayList(Release).init(allocator);
+    var existing_releases = loadExistingReleases(allocator, output_file) catch ArrayList(Release).init(allocator);
     defer {
         for (existing_releases.items) |release| {
             release.deinit(allocator);
@@ -173,12 +174,10 @@ pub fn main() !u8 {
     const atom_content = try atom.generateFeed(allocator, all_releases.items);
     defer allocator.free(atom_content);
 
-    // Write Atom feed to file
-    const atom_file = std.fs.cwd().createFile("releases.xml", .{}) catch |err| {
-        print("Error creating Atom feed file: {}\n", .{err});
-        return;
-    };
-    defer atom_file.close();
+    // Write to output file
+    const file = try std.fs.cwd().createFile(output_file, .{});
+    defer file.close();
+    try file.writeAll(atom_content);
 
     // Log to stderr for user feedback
     std.debug.print("Found {} new releases\n", .{new_releases.items.len});
@@ -235,10 +234,10 @@ test "Atom feed has correct structure" {
     try std.testing.expect(std.mem.indexOf(u8, atom_content, "<summary>Test release</summary>") != null);
     try std.testing.expect(std.mem.indexOf(u8, atom_content, "<category term=\"github\"/>") != null);
 }
-fn loadExistingReleases(allocator: Allocator) !ArrayList(Release) {
+fn loadExistingReleases(allocator: Allocator, filename: []const u8) !ArrayList(Release) {
     var releases = ArrayList(Release).init(allocator);
 
-    const file = std.fs.cwd().openFile("releases.xml", .{}) catch |err| switch (err) {
+    const file = std.fs.cwd().openFile(filename, .{}) catch |err| switch (err) {
         error.FileNotFound => return releases, // No existing file, return empty list
         else => return err,
     };
