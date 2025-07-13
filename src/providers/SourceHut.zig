@@ -6,90 +6,95 @@ const ArrayList = std.ArrayList;
 const zeit = @import("zeit");
 
 const Release = @import("../main.zig").Release;
+const Provider = @import("../Provider.zig");
 
-pub const SourceHutProvider = struct {
-    repositories: [][]const u8,
-    token: []const u8,
+repositories: [][]const u8,
+token: []const u8,
 
-    pub fn init(token: []const u8, repositories: [][]const u8) SourceHutProvider {
-        return SourceHutProvider{ .token = token, .repositories = repositories };
+const Self = @This();
+
+pub fn init(token: []const u8, repositories: [][]const u8) Self {
+    return Self{ .token = token, .repositories = repositories };
+}
+
+pub fn provider(self: *Self) Provider {
+    return Provider.init(self);
+}
+
+pub fn fetchReleases(self: *Self, allocator: Allocator) !ArrayList(Release) {
+    return self.fetchReleasesForRepos(allocator, self.repositories, self.token);
+}
+
+pub fn fetchReleasesForRepos(self: *Self, allocator: Allocator, repositories: [][]const u8, token: ?[]const u8) !ArrayList(Release) {
+    _ = self;
+    var client = http.Client{ .allocator = allocator };
+    defer client.deinit();
+
+    var releases = ArrayList(Release).init(allocator);
+    errdefer {
+        for (releases.items) |release| {
+            release.deinit(allocator);
+        }
+        releases.deinit();
     }
 
-    pub fn fetchReleases(self: *@This(), allocator: Allocator) !ArrayList(Release) {
-        return self.fetchReleasesForRepos(allocator, self.repositories, self.token);
-    }
-
-    pub fn fetchReleasesForRepos(self: *@This(), allocator: Allocator, repositories: [][]const u8, token: ?[]const u8) !ArrayList(Release) {
-        _ = self;
-        var client = http.Client{ .allocator = allocator };
-        defer client.deinit();
-
-        var releases = ArrayList(Release).init(allocator);
-        errdefer {
-            for (releases.items) |release| {
-                release.deinit(allocator);
-            }
-            releases.deinit();
-        }
-
-        for (repositories) |repo| {
-            const repo_tags = getRepoTags(allocator, &client, token, repo) catch |err| {
-                std.debug.print("Error fetching SourceHut tags for {s}: {}\n", .{ repo, err });
-                continue;
-            };
-            defer {
-                for (repo_tags.items) |release| {
-                    release.deinit(allocator);
-                }
-                repo_tags.deinit();
-            }
-
-            for (repo_tags.items) |release| {
-                const duplicated_release = Release{
-                    .repo_name = try allocator.dupe(u8, release.repo_name),
-                    .tag_name = try allocator.dupe(u8, release.tag_name),
-                    .published_at = try allocator.dupe(u8, release.published_at),
-                    .html_url = try allocator.dupe(u8, release.html_url),
-                    .description = try allocator.dupe(u8, release.description),
-                    .provider = try allocator.dupe(u8, release.provider),
-                };
-                releases.append(duplicated_release) catch |err| {
-                    duplicated_release.deinit(allocator);
-                    return err;
-                };
-            }
-        }
-
-        return releases;
-    }
-
-    pub fn fetchReleasesForReposFiltered(self: *@This(), allocator: Allocator, repositories: [][]const u8, token: ?[]const u8, existing_releases: []const Release) !ArrayList(Release) {
-        var latest_date: i64 = 0;
-        for (existing_releases) |release| {
-            if (std.mem.eql(u8, release.provider, "sourcehut")) {
-                const release_time = parseReleaseTimestamp(release.published_at) catch 0;
-                if (release_time > latest_date) {
-                    latest_date = release_time;
-                }
-            }
-        }
-
-        const all_releases = try self.fetchReleasesForRepos(allocator, repositories, token);
+    for (repositories) |repo| {
+        const repo_tags = getRepoTags(allocator, &client, token, repo) catch |err| {
+            std.debug.print("Error fetching SourceHut tags for {s}: {}\n", .{ repo, err });
+            continue;
+        };
         defer {
-            for (all_releases.items) |release| {
+            for (repo_tags.items) |release| {
                 release.deinit(allocator);
             }
-            all_releases.deinit();
+            repo_tags.deinit();
         }
 
-        return filterNewReleases(allocator, all_releases.items, latest_date);
+        for (repo_tags.items) |release| {
+            const duplicated_release = Release{
+                .repo_name = try allocator.dupe(u8, release.repo_name),
+                .tag_name = try allocator.dupe(u8, release.tag_name),
+                .published_at = try allocator.dupe(u8, release.published_at),
+                .html_url = try allocator.dupe(u8, release.html_url),
+                .description = try allocator.dupe(u8, release.description),
+                .provider = try allocator.dupe(u8, release.provider),
+            };
+            releases.append(duplicated_release) catch |err| {
+                duplicated_release.deinit(allocator);
+                return err;
+            };
+        }
     }
 
-    pub fn getName(self: *@This()) []const u8 {
-        _ = self;
-        return "sourcehut";
+    return releases;
+}
+
+pub fn fetchReleasesForReposFiltered(self: *Self, allocator: Allocator, repositories: [][]const u8, token: ?[]const u8, existing_releases: []const Release) !ArrayList(Release) {
+    var latest_date: i64 = 0;
+    for (existing_releases) |release| {
+        if (std.mem.eql(u8, release.provider, "sourcehut")) {
+            const release_time = parseReleaseTimestamp(release.published_at) catch 0;
+            if (release_time > latest_date) {
+                latest_date = release_time;
+            }
+        }
     }
-};
+
+    const all_releases = try self.fetchReleasesForRepos(allocator, repositories, token);
+    defer {
+        for (all_releases.items) |release| {
+            release.deinit(allocator);
+        }
+        all_releases.deinit();
+    }
+
+    return filterNewReleases(allocator, all_releases.items, latest_date);
+}
+
+pub fn getName(self: *Self) []const u8 {
+    _ = self;
+    return "sourcehut";
+}
 
 fn getRepoTags(allocator: Allocator, client: *http.Client, token: ?[]const u8, repo: []const u8) !ArrayList(Release) {
     var releases = ArrayList(Release).init(allocator);
@@ -343,10 +348,10 @@ test "sourcehut provider" {
     const allocator = std.testing.allocator;
 
     const repos = [_][]const u8{};
-    var provider = SourceHutProvider.init("", &repos);
+    var sourcehut_provider = init("", &repos);
 
     // Test with empty token (should fail gracefully)
-    const releases = provider.fetchReleases(allocator) catch |err| {
+    const releases = sourcehut_provider.fetchReleases(allocator) catch |err| {
         try std.testing.expect(err == error.HttpRequestFailed);
         return;
     };
@@ -357,7 +362,7 @@ test "sourcehut provider" {
         releases.deinit();
     }
 
-    try std.testing.expectEqualStrings("sourcehut", provider.getName());
+    try std.testing.expectEqualStrings("sourcehut", sourcehut_provider.getName());
 }
 
 test "sourcehut release parsing with live data snapshot" {

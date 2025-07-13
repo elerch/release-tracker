@@ -6,48 +6,53 @@ const ArrayList = std.ArrayList;
 const zeit = @import("zeit");
 
 const Release = @import("../main.zig").Release;
+const Provider = @import("../Provider.zig");
 
-pub const GitHubProvider = struct {
-    token: []const u8,
+token: []const u8,
 
-    pub fn init(token: []const u8) GitHubProvider {
-        return GitHubProvider{ .token = token };
-    }
+const Self = @This();
 
-    pub fn fetchReleases(self: *@This(), allocator: Allocator) !ArrayList(Release) {
-        var client = http.Client{ .allocator = allocator };
-        defer client.deinit();
+pub fn init(token: []const u8) Self {
+    return Self{ .token = token };
+}
 
-        var releases = ArrayList(Release).init(allocator);
+pub fn provider(self: *Self) Provider {
+    return Provider.init(self);
+}
 
-        // First, get starred repositories
-        const starred_repos = try getStarredRepos(allocator, &client, self.token);
-        defer {
-            for (starred_repos.items) |repo| {
-                allocator.free(repo);
-            }
-            starred_repos.deinit();
-        }
+pub fn fetchReleases(self: *Self, allocator: Allocator) !ArrayList(Release) {
+    var client = http.Client{ .allocator = allocator };
+    defer client.deinit();
 
-        // Then get releases for each repo
+    var releases = ArrayList(Release).init(allocator);
+
+    // First, get starred repositories
+    const starred_repos = try getStarredRepos(allocator, &client, self.token);
+    defer {
         for (starred_repos.items) |repo| {
-            const repo_releases = getRepoReleases(allocator, &client, self.token, repo) catch |err| {
-                std.debug.print("Error fetching releases for {s}: {}\n", .{ repo, err });
-                continue;
-            };
-            defer repo_releases.deinit();
-
-            try releases.appendSlice(repo_releases.items);
+            allocator.free(repo);
         }
-
-        return releases;
+        starred_repos.deinit();
     }
 
-    pub fn getName(self: *@This()) []const u8 {
-        _ = self;
-        return "github";
+    // Then get releases for each repo
+    for (starred_repos.items) |repo| {
+        const repo_releases = getRepoReleases(allocator, &client, self.token, repo) catch |err| {
+            std.debug.print("Error fetching releases for {s}: {}\n", .{ repo, err });
+            continue;
+        };
+        defer repo_releases.deinit();
+
+        try releases.appendSlice(repo_releases.items);
     }
-};
+
+    return releases;
+}
+
+pub fn getName(self: *Self) []const u8 {
+    _ = self;
+    return "github";
+}
 
 fn getStarredRepos(allocator: Allocator, client: *http.Client, token: []const u8) !ArrayList([]const u8) {
     var repos = ArrayList([]const u8).init(allocator);
@@ -174,10 +179,10 @@ fn parseTimestamp(date_str: []const u8) !i64 {
 test "github provider" {
     const allocator = std.testing.allocator;
 
-    var provider = GitHubProvider.init("");
+    var github_provider = init("");
 
     // Test with empty token (should fail gracefully)
-    const releases = provider.fetchReleases(allocator) catch |err| {
+    const releases = github_provider.fetchReleases(allocator) catch |err| {
         try std.testing.expect(err == error.HttpRequestFailed);
         return;
     };
@@ -188,7 +193,7 @@ test "github provider" {
         releases.deinit();
     }
 
-    try std.testing.expectEqualStrings("github", provider.getName());
+    try std.testing.expectEqualStrings("github", github_provider.getName());
 }
 
 test "github release parsing with live data snapshot" {

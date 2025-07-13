@@ -6,51 +6,56 @@ const ArrayList = std.ArrayList;
 const zeit = @import("zeit");
 
 const Release = @import("../main.zig").Release;
+const Provider = @import("../Provider.zig");
 
-pub const CodebergProvider = struct {
-    token: []const u8,
+token: []const u8,
 
-    pub fn init(token: []const u8) CodebergProvider {
-        return CodebergProvider{ .token = token };
-    }
+const Self = @This();
 
-    pub fn fetchReleases(self: *@This(), allocator: Allocator) !ArrayList(Release) {
-        var client = http.Client{ .allocator = allocator };
-        defer client.deinit();
+pub fn init(token: []const u8) Self {
+    return Self{ .token = token };
+}
 
-        var releases = ArrayList(Release).init(allocator);
+pub fn provider(self: *Self) Provider {
+    return Provider.init(self);
+}
 
-        // Get starred repositories (Codeberg uses Gitea API)
-        const starred_repos = try getStarredRepos(allocator, &client, self.token);
-        defer {
-            for (starred_repos.items) |repo| {
-                allocator.free(repo);
-            }
-            starred_repos.deinit();
-        }
+pub fn fetchReleases(self: *Self, allocator: Allocator) !ArrayList(Release) {
+    var client = http.Client{ .allocator = allocator };
+    defer client.deinit();
 
-        // Get releases for each repo
+    var releases = ArrayList(Release).init(allocator);
+
+    // Get starred repositories (Codeberg uses Gitea API)
+    const starred_repos = try getStarredRepos(allocator, &client, self.token);
+    defer {
         for (starred_repos.items) |repo| {
-            const repo_releases = getRepoReleases(allocator, &client, self.token, repo) catch |err| {
-                std.debug.print("Error fetching Codeberg releases for {s}: {}\n", .{ repo, err });
-                continue;
-            };
-            defer repo_releases.deinit();
-
-            // Transfer ownership of the releases to the main list
-            for (repo_releases.items) |release| {
-                try releases.append(release);
-            }
+            allocator.free(repo);
         }
-
-        return releases;
+        starred_repos.deinit();
     }
 
-    pub fn getName(self: *@This()) []const u8 {
-        _ = self;
-        return "codeberg";
+    // Get releases for each repo
+    for (starred_repos.items) |repo| {
+        const repo_releases = getRepoReleases(allocator, &client, self.token, repo) catch |err| {
+            std.debug.print("Error fetching Codeberg releases for {s}: {}\n", .{ repo, err });
+            continue;
+        };
+        defer repo_releases.deinit();
+
+        // Transfer ownership of the releases to the main list
+        for (repo_releases.items) |release| {
+            try releases.append(release);
+        }
     }
-};
+
+    return releases;
+}
+
+pub fn getName(self: *Self) []const u8 {
+    _ = self;
+    return "codeberg";
+}
 
 fn getStarredRepos(allocator: Allocator, client: *http.Client, token: []const u8) !ArrayList([]const u8) {
     var repos = ArrayList([]const u8).init(allocator);
@@ -262,10 +267,10 @@ fn parseTimestamp(date_str: []const u8) !i64 {
 test "codeberg provider" {
     const allocator = std.testing.allocator;
 
-    var provider = CodebergProvider.init("");
+    var codeberg_provider = init("");
 
     // Test with empty token (should fail gracefully)
-    const releases = provider.fetchReleases(allocator) catch |err| {
+    const releases = codeberg_provider.fetchReleases(allocator) catch |err| {
         try std.testing.expect(err == error.Unauthorized or err == error.HttpRequestFailed);
         return;
     };
@@ -276,7 +281,7 @@ test "codeberg provider" {
         releases.deinit();
     }
 
-    try std.testing.expectEqualStrings("codeberg", provider.getName());
+    try std.testing.expectEqualStrings("codeberg", codeberg_provider.getName());
 }
 
 test "codeberg release parsing with live data snapshot" {

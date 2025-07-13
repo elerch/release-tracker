@@ -6,51 +6,56 @@ const ArrayList = std.ArrayList;
 const zeit = @import("zeit");
 
 const Release = @import("../main.zig").Release;
+const Provider = @import("../Provider.zig");
 
-pub const GitLabProvider = struct {
-    token: []const u8,
+token: []const u8,
 
-    pub fn init(token: []const u8) GitLabProvider {
-        return GitLabProvider{ .token = token };
-    }
+const Self = @This();
 
-    pub fn fetchReleases(self: *@This(), allocator: Allocator) !ArrayList(Release) {
-        var client = http.Client{ .allocator = allocator };
-        defer client.deinit();
+pub fn init(token: []const u8) Self {
+    return Self{ .token = token };
+}
 
-        var releases = ArrayList(Release).init(allocator);
+pub fn provider(self: *Self) Provider {
+    return Provider.init(self);
+}
 
-        // Get starred projects
-        const starred_projects = try getStarredProjects(allocator, &client, self.token);
-        defer {
-            for (starred_projects.items) |project| {
-                allocator.free(project);
-            }
-            starred_projects.deinit();
+pub fn fetchReleases(self: *Self, allocator: Allocator) !ArrayList(Release) {
+    var client = http.Client{ .allocator = allocator };
+    defer client.deinit();
+
+    var releases = ArrayList(Release).init(allocator);
+
+    // Get starred projects
+    const starred_projects = try getStarredProjects(allocator, &client, self.token);
+    defer {
+        for (starred_projects.items) |project| {
+            allocator.free(project);
         }
+        starred_projects.deinit();
+    }
 
-        // Get releases for each project
-        for (starred_projects.items) |project_id| {
-            const project_releases = getProjectReleases(allocator, &client, self.token, project_id) catch |err| {
-                std.debug.print("Error fetching GitLab releases for project {s}: {}\n", .{ project_id, err });
-                continue;
-            };
-            defer project_releases.deinit();
+    // Get releases for each project
+    for (starred_projects.items) |project_id| {
+        const project_releases = getProjectReleases(allocator, &client, self.token, project_id) catch |err| {
+            std.debug.print("Error fetching GitLab releases for project {s}: {}\n", .{ project_id, err });
+            continue;
+        };
+        defer project_releases.deinit();
 
-            // Transfer ownership of the releases to the main list
-            for (project_releases.items) |release| {
-                try releases.append(release);
-            }
+        // Transfer ownership of the releases to the main list
+        for (project_releases.items) |release| {
+            try releases.append(release);
         }
-
-        return releases;
     }
 
-    pub fn getName(self: *@This()) []const u8 {
-        _ = self;
-        return "gitlab";
-    }
-};
+    return releases;
+}
+
+pub fn getName(self: *Self) []const u8 {
+    _ = self;
+    return "gitlab";
+}
 
 fn getStarredProjects(allocator: Allocator, client: *http.Client, token: []const u8) !ArrayList([]const u8) {
     var projects = ArrayList([]const u8).init(allocator);
@@ -258,10 +263,10 @@ fn parseTimestamp(date_str: []const u8) !i64 {
 test "gitlab provider" {
     const allocator = std.testing.allocator;
 
-    var provider = GitLabProvider.init("");
+    var gitlab_provider = init("");
 
     // Test with empty token (should fail gracefully)
-    const releases = provider.fetchReleases(allocator) catch |err| {
+    const releases = gitlab_provider.fetchReleases(allocator) catch |err| {
         try std.testing.expect(err == error.HttpRequestFailed);
         return;
     };
@@ -272,7 +277,7 @@ test "gitlab provider" {
         releases.deinit();
     }
 
-    try std.testing.expectEqualStrings("gitlab", provider.getName());
+    try std.testing.expectEqualStrings("gitlab", gitlab_provider.getName());
 }
 
 test "gitlab release parsing with live data snapshot" {

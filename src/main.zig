@@ -5,10 +5,10 @@ const ArrayList = std.ArrayList;
 const Allocator = std.mem.Allocator;
 const Thread = std.Thread;
 
-const github = @import("providers/github.zig");
-const gitlab = @import("providers/gitlab.zig");
-const codeberg = @import("providers/codeberg.zig");
-const sourcehut = @import("providers/sourcehut.zig");
+const GitHub = @import("providers/GitHub.zig");
+const GitLab = @import("providers/GitLab.zig");
+const Codeberg = @import("providers/Codeberg.zig");
+const SourceHut = @import("providers/SourceHut.zig");
 const atom = @import("atom.zig");
 const config = @import("config.zig");
 const zeit = @import("zeit");
@@ -102,33 +102,27 @@ pub fn main() !u8 {
     defer providers.deinit();
 
     // Initialize providers with their tokens (need to persist for the lifetime of the program)
-    var github_provider: ?github.GitHubProvider = null;
-    var gitlab_provider: ?gitlab.GitLabProvider = null;
-    var codeberg_provider: ?codeberg.CodebergProvider = null;
-    var sourcehut_provider: ?sourcehut.SourceHutProvider = null;
+    var github_provider: ?GitHub = null;
+    var gitlab_provider: ?GitLab = null;
+    var codeberg_provider: ?Codeberg = null;
+    var sourcehut_provider: ?SourceHut = null;
 
     if (app_config.github_token) |token| {
-        github_provider = github.GitHubProvider.init(token);
-        try providers.append(Provider.init(&github_provider.?));
+        github_provider = GitHub.init(token);
+        try providers.append(github_provider.?.provider());
     }
-
     if (app_config.gitlab_token) |token| {
-        gitlab_provider = gitlab.GitLabProvider.init(token);
-        try providers.append(Provider.init(&gitlab_provider.?));
+        gitlab_provider = GitLab.init(token);
+        try providers.append(gitlab_provider.?.provider());
     }
-
     if (app_config.codeberg_token) |token| {
-        codeberg_provider = codeberg.CodebergProvider.init(token);
-        try providers.append(Provider.init(&codeberg_provider.?));
+        codeberg_provider = Codeberg.init(token);
+        try providers.append(codeberg_provider.?.provider());
     }
-
-    // Configure SourceHut provider with repositories if available
-    if (app_config.sourcehut) |sh_config| {
-        if (sh_config.repositories.len > 0 and sh_config.token != null) {
-            sourcehut_provider = sourcehut.SourceHutProvider.init(sh_config.token.?, sh_config.repositories);
-            try providers.append(Provider.init(&sourcehut_provider.?));
-        }
-    }
+    if (app_config.sourcehut) |sh_config| if (sh_config.repositories.len > 0 and sh_config.token != null) {
+        sourcehut_provider = SourceHut.init(sh_config.token.?, sh_config.repositories);
+        try providers.append(sourcehut_provider.?.provider());
+    };
 
     // Fetch releases from all providers concurrently using thread pool
     const provider_results = try fetchReleasesFromAllProviders(allocator, providers.items, existing_releases.items);

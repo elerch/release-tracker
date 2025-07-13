@@ -4,10 +4,10 @@ const ArrayList = std.ArrayList;
 
 const atom = @import("atom.zig");
 const Release = @import("main.zig").Release;
-const github = @import("providers/github.zig");
-const gitlab = @import("providers/gitlab.zig");
-const codeberg = @import("providers/codeberg.zig");
-const sourcehut = @import("providers/sourcehut.zig");
+const GitHub = @import("providers/GitHub.zig");
+const GitLab = @import("providers/GitLab.zig");
+const Codeberg = @import("providers/Codeberg.zig");
+const SourceHut = @import("providers/SourceHut.zig");
 const config = @import("config.zig");
 
 test "Atom feed validates against W3C validator" {
@@ -60,8 +60,8 @@ test "GitHub provider integration" {
         return;
     }
 
-    var provider = github.GitHubProvider{};
-    const releases = provider.fetchReleases(allocator, app_config.github_token.?) catch |err| {
+    var provider = GitHub.init(app_config.github_token.?);
+    const releases = provider.fetchReleases(allocator) catch |err| {
         std.debug.print("GitHub provider error: {}\n", .{err});
         return;
     };
@@ -98,8 +98,8 @@ test "GitLab provider integration" {
         return;
     }
 
-    var provider = gitlab.GitLabProvider{};
-    const releases = provider.fetchReleases(allocator, app_config.gitlab_token.?) catch |err| {
+    var provider = GitLab.init(app_config.gitlab_token.?);
+    const releases = provider.fetchReleases(allocator) catch |err| {
         std.debug.print("GitLab provider error: {}\n", .{err});
         return; // Skip test if provider fails
     };
@@ -139,8 +139,8 @@ test "Codeberg provider integration" {
         return;
     }
 
-    var provider = codeberg.CodebergProvider{};
-    const releases = provider.fetchReleases(allocator, app_config.codeberg_token.?) catch |err| {
+    var provider = Codeberg.init(app_config.codeberg_token.?);
+    const releases = provider.fetchReleases(allocator) catch |err| {
         std.debug.print("Codeberg provider error: {}\n", .{err});
         return; // Skip test if provider fails
     };
@@ -177,8 +177,8 @@ test "SourceHut provider integration" {
         return;
     }
 
-    var provider = sourcehut.SourceHutProvider{};
-    const releases = provider.fetchReleasesForRepos(allocator, app_config.sourcehut.?.repositories, app_config.sourcehut.?.token) catch |err| {
+    var provider = SourceHut.init(app_config.sourcehut.?.token.?, app_config.sourcehut.?.repositories);
+    const releases = provider.fetchReleases(allocator) catch |err| {
         std.debug.print("SourceHut provider error: {}\n", .{err});
         return; // Skip test if provider fails
     };
