@@ -46,7 +46,7 @@ const ThreadContext = struct {
     allocator: Allocator,
 };
 
-pub fn main() !void {
+pub fn main() !u8 {
     var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
 
     const gpa, const is_debug = gpa: {
@@ -65,14 +65,15 @@ pub fn main() !void {
     defer std.process.argsFree(allocator, args);
 
     if (args.len < 2) {
-        print("Usage: {s} <config-file>\n", .{args[0]});
-        return;
+        const stdout = std.io.getStdOut().writer();
+        try stdout.print("Usage: {s} <config-file> [atom-feed-file]\n", .{args[0]});
+        return 0;
     }
 
     const config_path = args[1];
     var app_config = config.loadConfig(allocator, config_path) catch |err| {
         print("Error loading config: {}\n", .{err});
-        return;
+        return 1;
     };
     defer app_config.deinit();
 
@@ -184,9 +185,7 @@ pub fn main() !void {
     std.debug.print("Total releases in feed: {}\n", .{all_releases.items.len});
     std.debug.print("Updated feed written to: {s}\n", .{output_file});
 
-    print("Atom feed generated: releases.xml\n", .{});
-    print("Found {} new releases\n", .{new_releases.items.len});
-    print("Total releases in feed: {}\n", .{all_releases.items.len});
+    return 0;
 }
 
 test "main functionality" {
