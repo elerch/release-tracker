@@ -126,9 +126,7 @@ fn getRepoTags(allocator: Allocator, client: *http.Client, token: ?[]const u8, r
     const uri = try std.Uri.parse(graphql_url);
 
     // Use the exact same GraphQL query that worked in curl, with proper brace escaping
-    const request_body = try std.fmt.allocPrint(allocator,
-        "{{\"query\":\"query {{ user(username: \\\"{s}\\\") {{ repository(name: \\\"{s}\\\") {{ references {{ results {{ name target }} }} }} }} }}\"}}", 
-        .{ username, reponame });
+    const request_body = try std.fmt.allocPrint(allocator, "{{\"query\":\"query {{ user(username: \\\"{s}\\\") {{ repository(name: \\\"{s}\\\") {{ references {{ results {{ name target }} }} }} }} }}\"}}", .{ username, reponame });
     defer allocator.free(request_body);
 
     const auth_header = try std.fmt.allocPrint(allocator, "Bearer {s}", .{auth_token});
@@ -314,9 +312,7 @@ fn getCommitDate(allocator: Allocator, client: *http.Client, token: []const u8, 
     const uri = try std.Uri.parse(graphql_url);
 
     // Use the exact same GraphQL query that worked in curl, with proper brace escaping
-    const request_body = try std.fmt.allocPrint(allocator,
-        "{{\"query\":\"query {{ user(username: \\\"{s}\\\") {{ repository(name: \\\"{s}\\\") {{ revparse_single(revspec: \\\"{s}\\\") {{ author {{ time }} committer {{ time }} }} }} }} }}\"}}", 
-        .{ username, reponame, commit_id });
+    const request_body = try std.fmt.allocPrint(allocator, "{{\"query\":\"query {{ user(username: \\\"{s}\\\") {{ repository(name: \\\"{s}\\\") {{ revparse_single(revspec: \\\"{s}\\\") {{ author {{ time }} committer {{ time }} }} }} }} }}\"}}", .{ username, reponame, commit_id });
     defer allocator.free(request_body);
 
     const auth_header = try std.fmt.allocPrint(allocator, "Bearer {s}", .{token});

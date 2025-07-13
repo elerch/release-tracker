@@ -38,8 +38,9 @@ pub fn generateFeed(allocator: Allocator, releases: []const Release) ![]u8 {
 
     // Add current timestamp in proper ISO 8601 format using zeit
     const now = zeit.instant(.{}) catch zeit.instant(.{ .source = .now }) catch unreachable;
-    const updated_str = try std.fmt.allocPrint(allocator, "{}", .{now});
-    defer allocator.free(updated_str);
+    const time = now.time();
+    var buf: [64]u8 = undefined;
+    const updated_str = try time.bufPrint(&buf, .rfc3339);
     try writer.print("<updated>{s}</updated>\n", .{updated_str});
 
     // Add entries

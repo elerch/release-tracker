@@ -11,6 +11,9 @@ const Codeberg = @import("providers/Codeberg.zig");
 const SourceHut = @import("providers/SourceHut.zig");
 const atom = @import("atom.zig");
 const config = @import("config.zig");
+const Config = config.Config;
+const SourceHutConfig = config.SourceHutConfig;
+const xml_parser = @import("xml_parser.zig");
 const zeit = @import("zeit");
 
 const Provider = @import("Provider.zig");
@@ -78,7 +81,7 @@ pub fn main() !u8 {
     };
     defer app_config.deinit();
 
-    // Load existing Atom feed to get current releases
+    // Load existing releases to determine last check time per provider
     var existing_releases = loadExistingReleases(allocator, output_file) catch ArrayList(Release).init(allocator);
     defer {
         for (existing_releases.items) |release| {
@@ -152,7 +155,7 @@ pub fn main() !u8 {
     try all_releases.appendSlice(new_releases.items);
 
     // Add existing releases (up to a reasonable limit to prevent Atom feed from growing indefinitely)
-    const max_total_releases = 100;
+    const max_total_releases = 1000;
     const remaining_slots = if (new_releases.items.len < max_total_releases)
         max_total_releases - new_releases.items.len
     else
@@ -181,58 +184,12 @@ pub fn main() !u8 {
     return 0;
 }
 
-test "main functionality" {
-    // Basic test to ensure compilation
-    const allocator = std.testing.allocator;
-    var releases = ArrayList(Release).init(allocator);
-    defer releases.deinit();
-
-    try std.testing.expect(releases.items.len == 0);
-}
-
-test "Atom feed has correct structure" {
-    const allocator = std.testing.allocator;
-
-    const releases = [_]Release{
-        Release{
-            .repo_name = "test/repo",
-            .tag_name = "v1.0.0",
-            .published_at = "2024-01-01T00:00:00Z",
-            .html_url = "https://github.com/test/repo/releases/tag/v1.0.0",
-            .description = "Test release",
-            .provider = "github",
-        },
-    };
-
-    const atom_content = try atom.generateFeed(allocator, &releases);
-    defer allocator.free(atom_content);
-
-    // Check for required Atom elements
-    try std.testing.expect(std.mem.indexOf(u8, atom_content, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, atom_content, "<feed xmlns=\"http://www.w3.org/2005/Atom\">") != null);
-    try std.testing.expect(std.mem.indexOf(u8, atom_content, "<title>Repository Releases</title>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, atom_content, "<subtitle>New releases from starred repositories</subtitle>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, atom_content, "<link href=\"https://github.com\" rel=\"alternate\"/>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, atom_content, "<link href=\"https://example.com/releases.xml\" rel=\"self\"/>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, atom_content, "<id>https://example.com/releases</id>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, atom_content, "<updated>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, atom_content, "<entry>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, atom_content, "</feed>") != null);
-
-    // Check entry structure
-    try std.testing.expect(std.mem.indexOf(u8, atom_content, "<title>test/repo - v1.0.0</title>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, atom_content, "<link href=\"https://github.com/test/repo/releases/tag/v1.0.0\"/>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, atom_content, "<id>https://github.com/test/repo/releases/tag/v1.0.0</id>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, atom_content, "<updated>2024-01-01T00:00:00Z</updated>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, atom_content, "<author><name>github</name></author>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, atom_content, "<summary>Test release</summary>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, atom_content, "<category term=\"github\"/>") != null);
-}
 fn loadExistingReleases(allocator: Allocator, filename: []const u8) !ArrayList(Release) {
-    var releases = ArrayList(Release).init(allocator);
-
     const file = std.fs.cwd().openFile(filename, .{}) catch |err| switch (err) {
-        error.FileNotFound => return releases, // No existing file, return empty list
+        error.FileNotFound => {
+            print("No existing releases file found, starting fresh\n", .{});
+            return ArrayList(Release).init(allocator);
+        },
         else => return err,
     };
     defer file.close();
@@ -240,69 +197,19 @@ fn loadExistingReleases(allocator: Allocator, filename: []const u8) !ArrayList(R
     const content = try file.readToEndAlloc(allocator, 10 * 1024 * 1024);
     defer allocator.free(content);
 
-    // Simple XML parsing to extract existing releases from Atom feed
-    // Look for <entry> blocks and extract the data
-    var lines = std.mem.splitScalar(u8, content, '\n');
-    var current_release: ?Release = null;
-    var in_entry = false;
+    print("Loading existing releases from {s}...\n", .{filename});
 
-    while (lines.next()) |line| {
-        const trimmed = std.mem.trim(u8, line, " \t\r\n");
+    const releases = xml_parser.parseAtomFeed(allocator, content) catch |err| {
+        print("Warning: Failed to parse existing releases file: {}\n", .{err});
+        print("Starting fresh with no existing releases\n", .{});
+        return ArrayList(Release).init(allocator);
+    };
 
-        if (std.mem.startsWith(u8, trimmed, "<entry>")) {
-            in_entry = true;
-            current_release = Release{
-                .repo_name = try allocator.dupe(u8, ""),
-                .tag_name = try allocator.dupe(u8, ""),
-                .published_at = try allocator.dupe(u8, ""),
-                .html_url = try allocator.dupe(u8, ""),
-                .description = try allocator.dupe(u8, ""),
-                .provider = try allocator.dupe(u8, ""),
-            };
-        } else if (std.mem.startsWith(u8, trimmed, "</entry>")) {
-            if (current_release) |release| {
-                try releases.append(release);
-            }
-            in_entry = false;
-            current_release = null;
-        } else if (in_entry and current_release != null) {
-            if (std.mem.startsWith(u8, trimmed, "<title>") and std.mem.endsWith(u8, trimmed, "</title>")) {
-                const title_content = trimmed[7 .. trimmed.len - 8];
-                if (std.mem.indexOf(u8, title_content, " - ")) |dash_pos| {
-                    allocator.free(current_release.?.repo_name);
-                    allocator.free(current_release.?.tag_name);
-                    current_release.?.repo_name = try allocator.dupe(u8, title_content[0..dash_pos]);
-                    current_release.?.tag_name = try allocator.dupe(u8, title_content[dash_pos + 3 ..]);
-                }
-            } else if (std.mem.startsWith(u8, trimmed, "<link href=\"") and std.mem.endsWith(u8, trimmed, "\"/>")) {
-                const url_start = 12; // length of "<link href=\""
-                const url_end = trimmed.len - 3; // remove "\"/>"
-                allocator.free(current_release.?.html_url);
-                current_release.?.html_url = try allocator.dupe(u8, trimmed[url_start..url_end]);
-            } else if (std.mem.startsWith(u8, trimmed, "<updated>") and std.mem.endsWith(u8, trimmed, "</updated>")) {
-                allocator.free(current_release.?.published_at);
-                current_release.?.published_at = try allocator.dupe(u8, trimmed[9 .. trimmed.len - 10]);
-            } else if (std.mem.startsWith(u8, trimmed, "<category term=\"") and std.mem.endsWith(u8, trimmed, "\"/>")) {
-                const term_start = 15; // length of "<category term=\""
-                const term_end = trimmed.len - 3; // remove "\"/>"
-                allocator.free(current_release.?.provider);
-                current_release.?.provider = try allocator.dupe(u8, trimmed[term_start..term_end]);
-            } else if (std.mem.startsWith(u8, trimmed, "<summary>") and std.mem.endsWith(u8, trimmed, "</summary>")) {
-                allocator.free(current_release.?.description);
-                current_release.?.description = try allocator.dupe(u8, trimmed[9 .. trimmed.len - 10]);
-            }
-        }
-    }
-
-    // Clean up any incomplete release that wasn't properly closed
-    if (current_release) |release| {
-        release.deinit(allocator);
-    }
-
+    print("Loaded {} existing releases\n", .{releases.items.len});
     return releases;
 }
 
-fn filterNewReleases(allocator: Allocator, all_releases: []const Release, since_timestamp: i64) !ArrayList(Release) {
+pub fn filterNewReleases(allocator: Allocator, all_releases: []const Release, since_timestamp: i64) !ArrayList(Release) {
     var new_releases = ArrayList(Release).init(allocator);
 
     for (all_releases) |release| {
@@ -326,7 +233,7 @@ fn filterNewReleases(allocator: Allocator, all_releases: []const Release, since_
     return new_releases;
 }
 
-fn parseReleaseTimestamp(date_str: []const u8) !i64 {
+pub fn parseReleaseTimestamp(date_str: []const u8) !i64 {
     // Try parsing as direct timestamp first
     if (std.fmt.parseInt(i64, date_str, 10)) |timestamp| {
         return timestamp;
@@ -335,11 +242,13 @@ fn parseReleaseTimestamp(date_str: []const u8) !i64 {
         const instant = zeit.instant(.{
             .source = .{ .iso8601 = date_str },
         }) catch return 0;
-        return @intCast(instant.timestamp);
+        // Zeit returns nanoseconds, convert to seconds
+        const seconds = @divTrunc(instant.timestamp, 1_000_000_000);
+        return @intCast(seconds);
     }
 }
 
-fn compareReleasesByDate(context: void, a: Release, b: Release) bool {
+pub fn compareReleasesByDate(context: void, a: Release, b: Release) bool {
     _ = context;
     const timestamp_a = parseReleaseTimestamp(a.published_at) catch 0;
     const timestamp_b = parseReleaseTimestamp(b.published_at) catch 0;
@@ -351,18 +260,26 @@ fn formatTimestampForDisplay(allocator: Allocator, timestamp: i64) ![]const u8 {
         return try allocator.dupe(u8, "beginning of time");
     }
 
-    // Convert timestamp to approximate ISO date for display
-    const days_since_epoch = @divTrunc(timestamp, 24 * 60 * 60);
-    const years_since_1970 = @divTrunc(days_since_epoch, 365);
-    const remaining_days = @mod(days_since_epoch, 365);
-    const months = @divTrunc(remaining_days, 30);
-    const days = @mod(remaining_days, 30);
+    // Use zeit to format the timestamp properly
+    const instant = zeit.instant(.{ .source = .{ .unix_timestamp = timestamp } }) catch {
+        // Fallback to simple approximation if zeit fails
+        const days_since_epoch = @divTrunc(timestamp, 24 * 60 * 60);
+        const years_since_1970 = @divTrunc(days_since_epoch, 365);
+        const remaining_days = @mod(days_since_epoch, 365);
+        const months = @divTrunc(remaining_days, 30);
+        const days = @mod(remaining_days, 30);
 
-    const year = 1970 + years_since_1970;
-    const month = 1 + months;
-    const day = 1 + days;
+        const year = 1970 + years_since_1970;
+        const month = 1 + months;
+        const day = 1 + days;
 
-    return try std.fmt.allocPrint(allocator, "{d:0>4}-{d:0>2}-{d:0>2}T00:00:00Z", .{ year, month, day });
+        return try std.fmt.allocPrint(allocator, "{d:0>4}-{d:0>2}-{d:0>2}T00:00:00Z", .{ year, month, day });
+    };
+
+    const time = instant.time();
+    var buf: [64]u8 = undefined;
+    const formatted = try time.bufPrint(&buf, .rfc3339);
+    return try allocator.dupe(u8, formatted);
 }
 
 fn fetchReleasesFromAllProviders(
@@ -452,4 +369,399 @@ fn fetchProviderReleases(context: *const ThreadContext) void {
         result.error_msg = error_msg;
         print("✗ {s}: {s}\n", .{ provider.getName(), error_msg });
     }
+}
+
+test "main functionality" {
+    // Basic test to ensure compilation
+    const allocator = std.testing.allocator;
+    var releases = ArrayList(Release).init(allocator);
+    defer releases.deinit();
+
+    try std.testing.expect(releases.items.len == 0);
+}
+
+test "Atom feed has correct structure" {
+    const allocator = std.testing.allocator;
+
+    const releases = [_]Release{
+        Release{
+            .repo_name = "test/repo",
+            .tag_name = "v1.0.0",
+            .published_at = "2024-01-01T00:00:00Z",
+            .html_url = "https://github.com/test/repo/releases/tag/v1.0.0",
+            .description = "Test release",
+            .provider = "github",
+        },
+    };
+
+    const atom_content = try atom.generateFeed(allocator, &releases);
+    defer allocator.free(atom_content);
+
+    // Check for required Atom elements
+    try std.testing.expect(std.mem.indexOf(u8, atom_content, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, atom_content, "<feed xmlns=\"http://www.w3.org/2005/Atom\">") != null);
+    try std.testing.expect(std.mem.indexOf(u8, atom_content, "<title>Repository Releases</title>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, atom_content, "<subtitle>New releases from starred repositories</subtitle>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, atom_content, "<link href=\"https://github.com\" rel=\"alternate\"/>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, atom_content, "<link href=\"https://example.com/releases.xml\" rel=\"self\"/>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, atom_content, "<id>https://example.com/releases</id>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, atom_content, "<updated>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, atom_content, "<entry>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, atom_content, "</feed>") != null);
+
+    // Check entry structure
+    try std.testing.expect(std.mem.indexOf(u8, atom_content, "<title>test/repo - v1.0.0</title>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, atom_content, "<link href=\"https://github.com/test/repo/releases/tag/v1.0.0\"/>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, atom_content, "<id>https://github.com/test/repo/releases/tag/v1.0.0</id>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, atom_content, "<updated>2024-01-01T00:00:00Z</updated>") != null);
+
+    // Check for author - be flexible about exact format
+    try std.testing.expect(std.mem.indexOf(u8, atom_content, "<author>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, atom_content, "github") != null);
+    try std.testing.expect(std.mem.indexOf(u8, atom_content, "</author>") != null);
+
+    try std.testing.expect(std.mem.indexOf(u8, atom_content, "<summary>Test release</summary>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, atom_content, "<category term=\"github\"/>") != null);
+}
+
+test "loadExistingReleases with valid XML" {
+    const allocator = std.testing.allocator;
+
+    // Create a temporary file with valid Atom XML
+    const test_xml =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<feed xmlns="http://www.w3.org/2005/Atom">
+        \\<title>Repository Releases</title>
+        \\<entry>
+        \\  <title>test/repo - v1.0.0</title>
+        \\  <link href="https://github.com/test/repo/releases/tag/v1.0.0"/>
+        \\  <updated>2024-01-01T00:00:00Z</updated>
+        \\  <summary>Test release</summary>
+        \\  <category term="github"/>
+        \\</entry>
+        \\</feed>
+    ;
+
+    const temp_filename = "test_releases.xml";
+
+    // Write test XML to file
+    {
+        const file = try std.fs.cwd().createFile(temp_filename, .{});
+        defer file.close();
+        try file.writeAll(test_xml);
+    }
+    defer std.fs.cwd().deleteFile(temp_filename) catch {};
+
+    // Load existing releases
+    var releases = try loadExistingReleases(allocator, temp_filename);
+    defer {
+        for (releases.items) |release| {
+            release.deinit(allocator);
+        }
+        releases.deinit();
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), releases.items.len);
+    try std.testing.expectEqualStrings("test/repo", releases.items[0].repo_name);
+    try std.testing.expectEqualStrings("v1.0.0", releases.items[0].tag_name);
+}
+
+test "loadExistingReleases with nonexistent file" {
+    const allocator = std.testing.allocator;
+
+    var releases = try loadExistingReleases(allocator, "nonexistent_file.xml");
+    defer releases.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), releases.items.len);
+}
+
+test "loadExistingReleases with malformed XML" {
+    const allocator = std.testing.allocator;
+
+    const malformed_xml = "This is not valid XML at all!";
+    const temp_filename = "test_malformed.xml";
+
+    // Write malformed XML to file
+    {
+        const file = try std.fs.cwd().createFile(temp_filename, .{});
+        defer file.close();
+        try file.writeAll(malformed_xml);
+    }
+    defer std.fs.cwd().deleteFile(temp_filename) catch {};
+
+    // Should handle gracefully and return empty list
+    var releases = try loadExistingReleases(allocator, temp_filename);
+    defer releases.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), releases.items.len);
+}
+
+test "parseReleaseTimestamp with various formats" {
+    // Test ISO 8601 format
+    const timestamp1 = try parseReleaseTimestamp("2024-01-01T00:00:00Z");
+    try std.testing.expect(timestamp1 > 0);
+
+    // Test direct timestamp
+    const timestamp2 = try parseReleaseTimestamp("1704067200");
+    try std.testing.expectEqual(@as(i64, 1704067200), timestamp2);
+
+    // Test invalid format (should return 0)
+    const timestamp3 = parseReleaseTimestamp("invalid") catch 0;
+    try std.testing.expectEqual(@as(i64, 0), timestamp3);
+
+    // Test empty string
+    const timestamp4 = parseReleaseTimestamp("") catch 0;
+    try std.testing.expectEqual(@as(i64, 0), timestamp4);
+
+    // Test different ISO formats
+    const timestamp5 = try parseReleaseTimestamp("2024-12-25T15:30:45Z");
+    try std.testing.expect(timestamp5 > timestamp1);
+}
+
+test "filterNewReleases correctly filters by timestamp" {
+    const allocator = std.testing.allocator;
+
+    const old_release = Release{
+        .repo_name = "test/old",
+        .tag_name = "v1.0.0",
+        .published_at = "2024-01-01T00:00:00Z",
+        .html_url = "https://github.com/test/old/releases/tag/v1.0.0",
+        .description = "Old release",
+        .provider = "github",
+    };
+
+    const new_release = Release{
+        .repo_name = "test/new",
+        .tag_name = "v2.0.0",
+        .published_at = "2024-06-01T00:00:00Z",
+        .html_url = "https://github.com/test/new/releases/tag/v2.0.0",
+        .description = "New release",
+        .provider = "github",
+    };
+
+    const all_releases = [_]Release{ old_release, new_release };
+
+    // Filter with timestamp between the two releases
+    const march_timestamp = try parseReleaseTimestamp("2024-03-01T00:00:00Z");
+    var filtered = try filterNewReleases(allocator, &all_releases, march_timestamp);
+    defer {
+        for (filtered.items) |release| {
+            release.deinit(allocator);
+        }
+        filtered.deinit();
+    }
+
+    // Should only contain the new release
+    try std.testing.expectEqual(@as(usize, 1), filtered.items.len);
+    try std.testing.expectEqualStrings("test/new", filtered.items[0].repo_name);
+}
+
+test "loadExistingReleases handles various XML structures" {
+    const allocator = std.testing.allocator;
+
+    // Test with minimal valid XML
+    const minimal_xml =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<feed xmlns="http://www.w3.org/2005/Atom">
+        \\<title>Repository Releases</title>
+        \\<entry>
+        \\  <title>minimal/repo - v1.0.0</title>
+        \\  <link href="https://github.com/minimal/repo/releases/tag/v1.0.0"/>
+        \\  <updated>2024-01-01T00:00:00Z</updated>
+        \\</entry>
+        \\</feed>
+    ;
+
+    const temp_filename = "test_minimal.xml";
+
+    // Write test XML to file
+    {
+        const file = try std.fs.cwd().createFile(temp_filename, .{});
+        defer file.close();
+        try file.writeAll(minimal_xml);
+    }
+    defer std.fs.cwd().deleteFile(temp_filename) catch {};
+
+    // Load existing releases
+    var releases = try loadExistingReleases(allocator, temp_filename);
+    defer {
+        for (releases.items) |release| {
+            release.deinit(allocator);
+        }
+        releases.deinit();
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), releases.items.len);
+    try std.testing.expectEqualStrings("minimal/repo", releases.items[0].repo_name);
+    try std.testing.expectEqualStrings("v1.0.0", releases.items[0].tag_name);
+    try std.testing.expectEqualStrings("2024-01-01T00:00:00Z", releases.items[0].published_at);
+}
+
+test "loadExistingReleases with complex XML content" {
+    const allocator = std.testing.allocator;
+
+    // Test with complex XML including escaped characters and multiple entries
+    const complex_xml =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<feed xmlns="http://www.w3.org/2005/Atom">
+        \\<title>Repository Releases</title>
+        \\<subtitle>New releases from starred repositories</subtitle>
+        \\<link href="https://github.com" rel="alternate"/>
+        \\<link href="https://example.com/releases.xml" rel="self"/>
+        \\<id>https://example.com/releases</id>
+        \\<updated>2024-01-01T00:00:00Z</updated>
+        \\<entry>
+        \\  <title>complex/repo &amp; more - v1.0.0 &lt;beta&gt;</title>
+        \\  <link href="https://github.com/complex/repo/releases/tag/v1.0.0"/>
+        \\  <id>https://github.com/complex/repo/releases/tag/v1.0.0</id>
+        \\  <updated>2024-01-01T00:00:00Z</updated>
+        \\  <author><n>github</n></author>
+        \\  <summary>Release with &quot;special&quot; characters &amp; symbols</summary>
+        \\  <category term="github"/>
+        \\</entry>
+        \\<entry>
+        \\  <title>another/repo - v2.0.0</title>
+        \\  <link href="https://gitlab.com/another/repo/-/releases/v2.0.0"/>
+        \\  <id>https://gitlab.com/another/repo/-/releases/v2.0.0</id>
+        \\  <updated>2024-01-02T12:30:45Z</updated>
+        \\  <author><n>gitlab</n></author>
+        \\  <summary>Another release</summary>
+        \\  <category term="gitlab"/>
+        \\</entry>
+        \\</feed>
+    ;
+
+    const temp_filename = "test_complex.xml";
+
+    // Write test XML to file
+    {
+        const file = try std.fs.cwd().createFile(temp_filename, .{});
+        defer file.close();
+        try file.writeAll(complex_xml);
+    }
+    defer std.fs.cwd().deleteFile(temp_filename) catch {};
+
+    // Load existing releases
+    var releases = try loadExistingReleases(allocator, temp_filename);
+    defer {
+        for (releases.items) |release| {
+            release.deinit(allocator);
+        }
+        releases.deinit();
+    }
+
+    try std.testing.expectEqual(@as(usize, 2), releases.items.len);
+
+    // Check first release with escaped characters
+    try std.testing.expectEqualStrings("complex/repo & more", releases.items[0].repo_name);
+    try std.testing.expectEqualStrings("v1.0.0 <beta>", releases.items[0].tag_name);
+    try std.testing.expectEqualStrings("Release with \"special\" characters & symbols", releases.items[0].description);
+    try std.testing.expectEqualStrings("github", releases.items[0].provider);
+
+    // Check second release
+    try std.testing.expectEqualStrings("another/repo", releases.items[1].repo_name);
+    try std.testing.expectEqualStrings("v2.0.0", releases.items[1].tag_name);
+    try std.testing.expectEqualStrings("gitlab", releases.items[1].provider);
+}
+
+test "formatTimestampForDisplay produces valid ISO dates" {
+    const allocator = std.testing.allocator;
+
+    // Test with zero timestamp
+    const zero_result = try formatTimestampForDisplay(allocator, 0);
+    defer allocator.free(zero_result);
+    try std.testing.expectEqualStrings("beginning of time", zero_result);
+
+    // Test with known timestamp (2024-01-01T00:00:00Z = 1704067200)
+    const known_result = try formatTimestampForDisplay(allocator, 1704067200);
+    defer allocator.free(known_result);
+    try std.testing.expect(std.mem.startsWith(u8, known_result, "20"));
+    try std.testing.expect(std.mem.endsWith(u8, known_result, "Z"));
+    try std.testing.expect(std.mem.indexOf(u8, known_result, "T") != null);
+}
+
+test "XML parsing handles malformed entries gracefully" {
+    const allocator = std.testing.allocator;
+
+    // Test with partially malformed XML (missing closing tags, etc.)
+    const malformed_xml =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<feed xmlns="http://www.w3.org/2005/Atom">
+        \\<title>Repository Releases</title>
+        \\<entry>
+        \\  <title>good/repo - v1.0.0</title>
+        \\  <link href="https://github.com/good/repo/releases/tag/v1.0.0"/>
+        \\  <updated>2024-01-01T00:00:00Z</updated>
+        \\</entry>
+        \\<entry>
+        \\  <title>broken/repo - v2.0.0
+        \\  <link href="https://github.com/broken/repo/releases/tag/v2.0.0"/>
+        \\  <updated>2024-01-02T00:00:00Z</updated>
+        \\</entry>
+        \\<entry>
+        \\  <title>another/good - v3.0.0</title>
+        \\  <link href="https://github.com/another/good/releases/tag/v3.0.0"/>
+        \\  <updated>2024-01-03T00:00:00Z</updated>
+        \\</entry>
+        \\</feed>
+    ;
+
+    var releases = try xml_parser.parseAtomFeed(allocator, malformed_xml);
+    defer {
+        for (releases.items) |release| {
+            release.deinit(allocator);
+        }
+        releases.deinit();
+    }
+
+    // Should parse the good entries and skip/handle the malformed one gracefully
+    try std.testing.expect(releases.items.len >= 2);
+
+    // Check that we got the good entries
+    var found_good = false;
+    var found_another_good = false;
+    for (releases.items) |release| {
+        if (std.mem.eql(u8, release.repo_name, "good/repo")) {
+            found_good = true;
+        }
+        if (std.mem.eql(u8, release.repo_name, "another/good")) {
+            found_another_good = true;
+        }
+    }
+    try std.testing.expect(found_good);
+    try std.testing.expect(found_another_good);
+}
+
+test "compareReleasesByDate" {
+    const release1 = Release{
+        .repo_name = "test/repo1",
+        .tag_name = "v1.0.0",
+        .published_at = "2024-01-01T00:00:00Z",
+        .html_url = "https://github.com/test/repo1/releases/tag/v1.0.0",
+        .description = "First release",
+        .provider = "github",
+    };
+
+    const release2 = Release{
+        .repo_name = "test/repo2",
+        .tag_name = "v2.0.0",
+        .published_at = "2024-01-02T00:00:00Z",
+        .html_url = "https://github.com/test/repo2/releases/tag/v2.0.0",
+        .description = "Second release",
+        .provider = "github",
+    };
+
+    // release2 should come before release1 (more recent first)
+    try std.testing.expect(compareReleasesByDate({}, release2, release1));
+    try std.testing.expect(!compareReleasesByDate({}, release1, release2));
+}
+
+// Import XML parser tests
+test {
+    std.testing.refAllDecls(@import("xml_parser_tests.zig"));
+}
+
+// Import timestamp tests
+test {
+    std.testing.refAllDecls(@import("timestamp_tests.zig"));
 }

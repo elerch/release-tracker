@@ -68,9 +68,21 @@ pub fn loadConfig(allocator: Allocator, path: []const u8) !Config {
     }
 
     return Config{
-        .github_token = if (root.get("github_token")) |v| try allocator.dupe(u8, v.string) else null,
-        .gitlab_token = if (root.get("gitlab_token")) |v| try allocator.dupe(u8, v.string) else null,
-        .codeberg_token = if (root.get("codeberg_token")) |v| try allocator.dupe(u8, v.string) else null,
+        .github_token = if (root.get("github_token")) |v| switch (v) {
+            .string => |s| if (s.len > 0) try allocator.dupe(u8, s) else null,
+            .null => null,
+            else => null,
+        } else null,
+        .gitlab_token = if (root.get("gitlab_token")) |v| switch (v) {
+            .string => |s| if (s.len > 0) try allocator.dupe(u8, s) else null,
+            .null => null,
+            else => null,
+        } else null,
+        .codeberg_token = if (root.get("codeberg_token")) |v| switch (v) {
+            .string => |s| if (s.len > 0) try allocator.dupe(u8, s) else null,
+            .null => null,
+            else => null,
+        } else null,
         .sourcehut = sourcehut_config,
         .allocator = allocator,
     };
