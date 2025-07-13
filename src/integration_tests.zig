@@ -199,3 +199,89 @@ test "SourceHut provider integration" {
         try testing.expectEqualStrings("sourcehut", release.provider);
     }
 }
+
+test "SourceHut commit date fetching" {
+    const allocator = testing.allocator;
+
+    // Load config to get repositories
+    const app_config = config.loadConfig(allocator, "config.json") catch |err| {
+        std.debug.print("Skipping SourceHut commit date test - config not available: {}\n", .{err});
+        return;
+    };
+    defer app_config.deinit();
+
+    if (app_config.sourcehut == null or app_config.sourcehut.?.repositories.len == 0) {
+        std.debug.print("Skipping SourceHut commit date test - no repositories configured\n", .{});
+        return;
+    }
+
+    // Test with a single repository to focus on commit date fetching
+    var test_repos = [_][]const u8{app_config.sourcehut.?.repositories[0]};
+    var provider = SourceHut.init(app_config.sourcehut.?.token.?, test_repos[0..]);
+
+    const releases = provider.fetchReleases(allocator) catch |err| {
+        std.debug.print("SourceHut commit date test error: {}\n", .{err});
+        return;
+    };
+    defer {
+        for (releases.items) |release| {
+            release.deinit(allocator);
+        }
+        releases.deinit();
+    }
+
+    std.debug.print("SourceHut commit date test: Found {} releases from {s}\n", .{ releases.items.len, test_repos[0] });
+
+    // Verify we have some releases
+    if (releases.items.len == 0) {
+        std.debug.print("FAIL: No releases found from SourceHut repository {s}\n", .{test_repos[0]});
+        try testing.expect(false); // Force test failure - we should be able to fetch releases
+    }
+
+    var valid_dates: usize = 0;
+    var epoch_dates: usize = 0;
+
+    // Check commit dates
+    for (releases.items) |release| {
+        std.debug.print("Release: {s} - Date: {s}\n", .{ release.tag_name, release.published_at });
+
+        // Verify basic fields
+        try testing.expect(release.repo_name.len > 0);
+        try testing.expect(release.tag_name.len > 0);
+        try testing.expect(release.html_url.len > 0);
+        try testing.expect(release.published_at.len > 0);
+        try testing.expectEqualStrings("sourcehut", release.provider);
+
+        // Check if we got a real commit date vs epoch fallback
+        if (std.mem.eql(u8, release.published_at, "1970-01-01T00:00:00Z")) {
+            epoch_dates += 1;
+            std.debug.print("  -> Using epoch fallback date\n", .{});
+        } else {
+            valid_dates += 1;
+            std.debug.print("  -> Got real commit date\n", .{});
+
+            // Verify the date format looks reasonable (should be ISO 8601)
+            try testing.expect(release.published_at.len >= 19); // At least YYYY-MM-DDTHH:MM:SS
+            try testing.expect(std.mem.indexOf(u8, release.published_at, "T") != null);
+        }
+    }
+
+    std.debug.print("SourceHut commit date summary: {} valid dates, {} epoch fallbacks\n", .{ valid_dates, epoch_dates });
+
+    // We should have at least some valid commit dates
+    // If all dates are epoch fallbacks, something is wrong with our commit date fetching
+    if (releases.items.len > 0) {
+        const success_rate = (valid_dates * 100) / releases.items.len;
+        std.debug.print("Commit date success rate: {}%\n", .{success_rate});
+
+        // Test should fail if we can't fetch any real commit dates
+        if (valid_dates == 0) {
+            std.debug.print("FAIL: No valid commit dates were fetched from SourceHut\n", .{});
+            try testing.expect(false); // Force test failure
+        }
+
+        // Test passes if we can fetch tags and get real commit dates
+        try testing.expect(releases.items.len > 0);
+        try testing.expect(valid_dates > 0);
+    }
+}
