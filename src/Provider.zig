@@ -11,13 +11,13 @@ vtable: *const VTable,
 const Provider = @This();
 
 pub const VTable = struct {
-    fetchReleases: *const fn (ptr: *anyopaque, allocator: Allocator, token: []const u8) anyerror!ArrayList(Release),
+    fetchReleases: *const fn (ptr: *anyopaque, allocator: Allocator) anyerror!ArrayList(Release),
     getName: *const fn (ptr: *anyopaque) []const u8,
 };
 
 /// Fetch releases from this provider
-pub fn fetchReleases(self: Provider, allocator: Allocator, token: []const u8) !ArrayList(Release) {
-    return self.vtable.fetchReleases(self.ptr, allocator, token);
+pub fn fetchReleases(self: Provider, allocator: Allocator) !ArrayList(Release) {
+    return self.vtable.fetchReleases(self.ptr, allocator);
 }
 
 /// Get the name of this provider
@@ -34,9 +34,9 @@ pub fn init(pointer: anytype) Provider {
     if (ptr_info.pointer.size != .one) @compileError("Provider.init expects a single-item pointer");
 
     const gen = struct {
-        fn fetchReleasesImpl(ptr: *anyopaque, allocator: Allocator, token: []const u8) anyerror!ArrayList(Release) {
+        fn fetchReleasesImpl(ptr: *anyopaque, allocator: Allocator) anyerror!ArrayList(Release) {
             const self: Ptr = @ptrCast(@alignCast(ptr));
-            return @call(.always_inline, ptr_info.pointer.child.fetchReleases, .{ self, allocator, token });
+            return @call(.always_inline, ptr_info.pointer.child.fetchReleases, .{ self, allocator });
         }
 
         fn getNameImpl(ptr: *anyopaque) []const u8 {
@@ -60,9 +60,8 @@ test "Provider interface" {
     const TestProvider = struct {
         name: []const u8,
 
-        pub fn fetchReleases(self: *@This(), allocator: Allocator, token: []const u8) !ArrayList(Release) {
+        pub fn fetchReleases(self: *@This(), allocator: Allocator) !ArrayList(Release) {
             _ = self;
-            _ = token;
             return ArrayList(Release).init(allocator);
         }
 
@@ -75,7 +74,7 @@ test "Provider interface" {
     const provider = Provider.init(&test_provider);
 
     const allocator = std.testing.allocator;
-    const releases = try provider.fetchReleases(allocator, "token");
+    const releases = try provider.fetchReleases(allocator);
     defer releases.deinit();
 
     try std.testing.expectEqualStrings("test", provider.getName());

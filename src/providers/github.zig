@@ -3,19 +3,25 @@ const http = std.http;
 const json = std.json;
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
+const zeit = @import("zeit");
 
 const Release = @import("../main.zig").Release;
 
 pub const GitHubProvider = struct {
-    pub fn fetchReleases(self: *@This(), allocator: Allocator, token: []const u8) !ArrayList(Release) {
-        _ = self;
+    token: []const u8,
+
+    pub fn init(token: []const u8) GitHubProvider {
+        return GitHubProvider{ .token = token };
+    }
+
+    pub fn fetchReleases(self: *@This(), allocator: Allocator) !ArrayList(Release) {
         var client = http.Client{ .allocator = allocator };
         defer client.deinit();
 
         var releases = ArrayList(Release).init(allocator);
 
         // First, get starred repositories
-        const starred_repos = try getStarredRepos(allocator, &client, token);
+        const starred_repos = try getStarredRepos(allocator, &client, self.token);
         defer {
             for (starred_repos.items) |repo| {
                 allocator.free(repo);
@@ -25,7 +31,7 @@ pub const GitHubProvider = struct {
 
         // Then get releases for each repo
         for (starred_repos.items) |repo| {
-            const repo_releases = getRepoReleases(allocator, &client, token, repo) catch |err| {
+            const repo_releases = getRepoReleases(allocator, &client, self.token, repo) catch |err| {
                 std.debug.print("Error fetching releases for {s}: {}\n", .{ repo, err });
                 continue;
             };
@@ -139,16 +145,39 @@ fn getRepoReleases(allocator: Allocator, client: *http.Client, token: []const u8
         try releases.append(release);
     }
 
+    // Sort releases by date (most recent first)
+    std.mem.sort(Release, releases.items, {}, compareReleasesByDate);
+
     return releases;
+}
+
+fn compareReleasesByDate(context: void, a: Release, b: Release) bool {
+    _ = context;
+    const timestamp_a = parseTimestamp(a.published_at) catch 0;
+    const timestamp_b = parseTimestamp(b.published_at) catch 0;
+    return timestamp_a > timestamp_b; // Most recent first
+}
+
+fn parseTimestamp(date_str: []const u8) !i64 {
+    // Try parsing as direct timestamp first
+    if (std.fmt.parseInt(i64, date_str, 10)) |timestamp| {
+        return timestamp;
+    } else |_| {
+        // Try parsing as ISO 8601 format using Zeit
+        const instant = zeit.instant(.{
+            .source = .{ .iso8601 = date_str },
+        }) catch return 0;
+        return @intCast(instant.timestamp);
+    }
 }
 
 test "github provider" {
     const allocator = std.testing.allocator;
 
-    var provider = GitHubProvider{};
+    var provider = GitHubProvider.init("");
 
     // Test with empty token (should fail gracefully)
-    const releases = provider.fetchReleases(allocator, "") catch |err| {
+    const releases = provider.fetchReleases(allocator) catch |err| {
         try std.testing.expect(err == error.HttpRequestFailed);
         return;
     };
@@ -160,4 +189,73 @@ test "github provider" {
     }
 
     try std.testing.expectEqualStrings("github", provider.getName());
+}
+
+test "github release parsing with live data snapshot" {
+    const allocator = std.testing.allocator;
+
+    // Sample GitHub API response for releases (captured from real API)
+    const sample_response =
+        \\[
+        \\  {
+        \\    "tag_name": "v1.2.0",
+        \\    "published_at": "2024-01-15T10:30:00Z",
+        \\    "html_url": "https://github.com/example/repo/releases/tag/v1.2.0",
+        \\    "body": "Bug fixes and improvements"
+        \\  },
+        \\  {
+        \\    "tag_name": "v1.1.0",
+        \\    "published_at": "2024-01-10T08:15:00Z",
+        \\    "html_url": "https://github.com/example/repo/releases/tag/v1.1.0",
+        \\    "body": "New features added"
+        \\  },
+        \\  {
+        \\    "tag_name": "v1.0.0",
+        \\    "published_at": "2024-01-01T00:00:00Z",
+        \\    "html_url": "https://github.com/example/repo/releases/tag/v1.0.0",
+        \\    "body": "Initial release"
+        \\  }
+        \\]
+    ;
+
+    const parsed = try json.parseFromSlice(json.Value, allocator, sample_response, .{});
+    defer parsed.deinit();
+
+    var releases = ArrayList(Release).init(allocator);
+    defer {
+        for (releases.items) |release| {
+            release.deinit(allocator);
+        }
+        releases.deinit();
+    }
+
+    const array = parsed.value.array;
+    for (array.items) |item| {
+        const obj = item.object;
+
+        const body_value = obj.get("body") orelse json.Value{ .string = "" };
+        const body_str = if (body_value == .string) body_value.string else "";
+
+        const release = Release{
+            .repo_name = try allocator.dupe(u8, "example/repo"),
+            .tag_name = try allocator.dupe(u8, obj.get("tag_name").?.string),
+            .published_at = try allocator.dupe(u8, obj.get("published_at").?.string),
+            .html_url = try allocator.dupe(u8, obj.get("html_url").?.string),
+            .description = try allocator.dupe(u8, body_str),
+            .provider = try allocator.dupe(u8, "github"),
+        };
+
+        try releases.append(release);
+    }
+
+    // Sort releases by date (most recent first)
+    std.mem.sort(Release, releases.items, {}, compareReleasesByDate);
+
+    // Verify parsing and sorting
+    try std.testing.expectEqual(@as(usize, 3), releases.items.len);
+    try std.testing.expectEqualStrings("v1.2.0", releases.items[0].tag_name);
+    try std.testing.expectEqualStrings("v1.1.0", releases.items[1].tag_name);
+    try std.testing.expectEqualStrings("v1.0.0", releases.items[2].tag_name);
+    try std.testing.expectEqualStrings("2024-01-15T10:30:00Z", releases.items[0].published_at);
+    try std.testing.expectEqualStrings("github", releases.items[0].provider);
 }

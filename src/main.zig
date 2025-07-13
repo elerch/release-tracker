@@ -11,6 +11,7 @@ const codeberg = @import("providers/codeberg.zig");
 const sourcehut = @import("providers/sourcehut.zig");
 const atom = @import("atom.zig");
 const config = @import("config.zig");
+const zeit = @import("zeit");
 
 const Provider = @import("Provider.zig");
 
@@ -32,12 +33,6 @@ pub const Release = struct {
     }
 };
 
-const ProviderConfig = struct {
-    provider: Provider,
-    token: ?[]const u8,
-    name: []const u8,
-};
-
 const ProviderResult = struct {
     provider_name: []const u8,
     releases: ArrayList(Release),
@@ -45,7 +40,7 @@ const ProviderResult = struct {
 };
 
 const ThreadContext = struct {
-    provider_config: ProviderConfig,
+    provider: Provider,
     latest_release_date: i64,
     result: *ProviderResult,
     allocator: Allocator,
@@ -100,22 +95,38 @@ pub fn main() !void {
 
     print("Fetching releases from all providers concurrently...\n", .{});
 
-    // Initialize all providers
-    var github_provider = github.GitHubProvider{};
-    var gitlab_provider = gitlab.GitLabProvider{};
-    var codeberg_provider = codeberg.CodebergProvider{};
-    var sourcehut_provider = sourcehut.SourceHutProvider{};
-
-    // Create provider configurations with per-provider state
-
-    var providers = std.ArrayList(ProviderConfig).init(allocator);
+    // Create providers list
+    var providers = std.ArrayList(Provider).init(allocator);
     defer providers.deinit();
 
-    try providers.append(.{ .provider = Provider.init(&github_provider), .token = app_config.github_token, .name = "github" });
-    try providers.append(.{ .provider = Provider.init(&gitlab_provider), .token = app_config.gitlab_token, .name = "gitlab" });
-    try providers.append(.{ .provider = Provider.init(&codeberg_provider), .token = app_config.codeberg_token, .name = "codeberg" });
+    // Initialize providers with their tokens (need to persist for the lifetime of the program)
+    var github_provider: ?github.GitHubProvider = null;
+    var gitlab_provider: ?gitlab.GitLabProvider = null;
+    var codeberg_provider: ?codeberg.CodebergProvider = null;
+    var sourcehut_provider: ?sourcehut.SourceHutProvider = null;
 
-    // Note: sourcehut is handled separately since it uses a different API pattern
+    if (app_config.github_token) |token| {
+        github_provider = github.GitHubProvider.init(token);
+        try providers.append(Provider.init(&github_provider.?));
+    }
+
+    if (app_config.gitlab_token) |token| {
+        gitlab_provider = gitlab.GitLabProvider.init(token);
+        try providers.append(Provider.init(&gitlab_provider.?));
+    }
+
+    if (app_config.codeberg_token) |token| {
+        codeberg_provider = codeberg.CodebergProvider.init(token);
+        try providers.append(Provider.init(&codeberg_provider.?));
+    }
+
+    // Configure SourceHut provider with repositories if available
+    if (app_config.sourcehut) |sh_config| {
+        if (sh_config.repositories.len > 0 and sh_config.token != null) {
+            sourcehut_provider = sourcehut.SourceHutProvider.init(sh_config.token.?, sh_config.repositories);
+            try providers.append(Provider.init(&sourcehut_provider.?));
+        }
+    }
 
     // Fetch releases from all providers concurrently using thread pool
     const provider_results = try fetchReleasesFromAllProviders(allocator, providers.items, existing_releases.items);
@@ -129,23 +140,6 @@ pub fn main() !void {
             }
         }
         allocator.free(provider_results);
-    }
-
-    // Handle sourcehut separately since it needs the repository list
-    if (app_config.sourcehut) |sh_config| {
-        if (sh_config.repositories.len > 0) {
-            const sourcehut_releases = sourcehut_provider.fetchReleasesForReposFiltered(allocator, sh_config.repositories, sh_config.token, existing_releases.items) catch |err| blk: {
-                print("✗ sourcehut: Error fetching releases: {}\n", .{err});
-                break :blk ArrayList(Release).init(allocator);
-            };
-            defer {
-                // Don't free the releases here - they're transferred to new_releases
-                sourcehut_releases.deinit();
-            }
-
-            try new_releases.appendSlice(sourcehut_releases.items);
-            print("Found {} new releases from sourcehut\n", .{sourcehut_releases.items.len});
-        }
     }
 
     // Combine all new releases from threaded providers
@@ -171,6 +165,9 @@ pub fn main() !void {
     const existing_to_add = @min(existing_releases.items.len, remaining_slots);
     try all_releases.appendSlice(existing_releases.items[0..existing_to_add]);
 
+    // Sort all releases by published date (most recent first)
+    std.mem.sort(Release, all_releases.items, {}, compareReleasesByDate);
+
     // Generate Atom feed
     const atom_content = try atom.generateFeed(allocator, all_releases.items);
     defer allocator.free(atom_content);
@@ -182,7 +179,10 @@ pub fn main() !void {
     };
     defer atom_file.close();
 
-    try atom_file.writeAll(atom_content);
+    // Log to stderr for user feedback
+    std.debug.print("Found {} new releases\n", .{new_releases.items.len});
+    std.debug.print("Total releases in feed: {}\n", .{all_releases.items.len});
+    std.debug.print("Updated feed written to: {s}\n", .{output_file});
 
     print("Atom feed generated: releases.xml\n", .{});
     print("Found {} new releases\n", .{new_releases.items.len});
@@ -335,37 +335,23 @@ fn filterNewReleases(allocator: Allocator, all_releases: []const Release, since_
 }
 
 fn parseReleaseTimestamp(date_str: []const u8) !i64 {
-    // Handle different date formats from different providers
-    // GitHub/GitLab: "2024-01-01T00:00:00Z"
-    // Simple fallback: if it's a number, treat as timestamp
-
-    if (date_str.len == 0) return 0;
-
     // Try parsing as direct timestamp first
     if (std.fmt.parseInt(i64, date_str, 10)) |timestamp| {
         return timestamp;
     } else |_| {
-        // Try parsing ISO 8601 format (basic implementation)
-        if (std.mem.indexOf(u8, date_str, "T")) |t_pos| {
-            const date_part = date_str[0..t_pos];
-            var date_parts = std.mem.splitScalar(u8, date_part, '-');
-
-            const year_str = date_parts.next() orelse return error.InvalidDate;
-            const month_str = date_parts.next() orelse return error.InvalidDate;
-            const day_str = date_parts.next() orelse return error.InvalidDate;
-
-            const year = try std.fmt.parseInt(i32, year_str, 10);
-            const month = try std.fmt.parseInt(u8, month_str, 10);
-            const day = try std.fmt.parseInt(u8, day_str, 10);
-
-            // Simple approximation: convert to days since epoch and then to seconds
-            // This is not precise but good enough for comparison
-            const days_since_epoch: i64 = @as(i64, year - 1970) * 365 + @as(i64, month - 1) * 30 + @as(i64, day);
-            return days_since_epoch * 24 * 60 * 60;
-        }
+        // Try parsing as ISO 8601 format using Zeit
+        const instant = zeit.instant(.{
+            .source = .{ .iso8601 = date_str },
+        }) catch return 0;
+        return @intCast(instant.timestamp);
     }
+}
 
-    return 0; // Default to epoch if we can't parse
+fn compareReleasesByDate(context: void, a: Release, b: Release) bool {
+    _ = context;
+    const timestamp_a = parseReleaseTimestamp(a.published_at) catch 0;
+    const timestamp_b = parseReleaseTimestamp(b.published_at) catch 0;
+    return timestamp_a > timestamp_b; // Most recent first
 }
 
 fn formatTimestampForDisplay(allocator: Allocator, timestamp: i64) ![]const u8 {
@@ -389,7 +375,7 @@ fn formatTimestampForDisplay(allocator: Allocator, timestamp: i64) ![]const u8 {
 
 fn fetchReleasesFromAllProviders(
     allocator: Allocator,
-    providers: []const ProviderConfig,
+    providers: []const Provider,
     existing_releases: []const Release,
 ) ![]ProviderResult {
     var results = try allocator.alloc(ProviderResult, providers.len);
@@ -397,7 +383,7 @@ fn fetchReleasesFromAllProviders(
     // Initialize results
     for (results, 0..) |*result, i| {
         result.* = ProviderResult{
-            .provider_name = providers[i].name,
+            .provider_name = providers[i].getName(),
             .releases = ArrayList(Release).init(allocator),
             .error_msg = null,
         };
@@ -412,77 +398,66 @@ fn fetchReleasesFromAllProviders(
     defer allocator.free(contexts);
 
     // Calculate the latest release date for each provider from existing releases
-    for (providers, 0..) |provider_config, i| {
-        if (provider_config.token) |_| {
-            // Find the latest release date for this provider
-            var latest_date: i64 = 0;
-            for (existing_releases) |release| {
-                if (std.mem.eql(u8, release.provider, provider_config.name)) {
-                    const release_time = parseReleaseTimestamp(release.published_at) catch 0;
-                    if (release_time > latest_date) {
-                        latest_date = release_time;
-                    }
+    for (providers, 0..) |provider, i| {
+        // Find the latest release date for this provider
+        var latest_date: i64 = 0;
+        for (existing_releases) |release| {
+            if (std.mem.eql(u8, release.provider, provider.getName())) {
+                const release_time = parseReleaseTimestamp(release.published_at) catch 0;
+                if (release_time > latest_date) {
+                    latest_date = release_time;
                 }
             }
-
-            contexts[i] = ThreadContext{
-                .provider_config = provider_config,
-                .latest_release_date = latest_date,
-                .result = &results[i],
-                .allocator = allocator,
-            };
-
-            threads[i] = try Thread.spawn(.{}, fetchProviderReleases, .{&contexts[i]});
-        } else {
-            // No token, skip this provider
-            print("Skipping {s} - no token provided\n", .{provider_config.name});
         }
+
+        contexts[i] = ThreadContext{
+            .provider = provider,
+            .latest_release_date = latest_date,
+            .result = &results[i],
+            .allocator = allocator,
+        };
+
+        threads[i] = try Thread.spawn(.{}, fetchProviderReleases, .{&contexts[i]});
     }
 
     // Wait for all threads to complete
-    for (providers, 0..) |provider_config, i| {
-        if (provider_config.token != null) {
-            threads[i].join();
-        }
+    for (providers, 0..) |_, i| {
+        threads[i].join();
     }
 
     return results;
 }
 
 fn fetchProviderReleases(context: *const ThreadContext) void {
-    const provider_config = context.provider_config;
+    const provider = context.provider;
     const latest_release_date = context.latest_release_date;
     const result = context.result;
     const allocator = context.allocator;
 
     const since_str = formatTimestampForDisplay(allocator, latest_release_date) catch "unknown";
     defer if (!std.mem.eql(u8, since_str, "unknown")) allocator.free(since_str);
-    print("Fetching releases from {s} (since: {s})...\n", .{ provider_config.name, since_str });
+    print("Fetching releases from {s} (since: {s})...\n", .{ provider.getName(), since_str });
 
-    if (provider_config.token) |token| {
-        if (provider_config.provider.fetchReleases(allocator, token)) |all_releases| {
-            defer {
-                for (all_releases.items) |release| {
-                    release.deinit(allocator);
-                }
-                all_releases.deinit();
+    if (provider.fetchReleases(allocator)) |all_releases| {
+        defer {
+            for (all_releases.items) |release| {
+                release.deinit(allocator);
             }
-
-            // Filter releases newer than latest known release
-            const filtered = filterNewReleases(allocator, all_releases.items, latest_release_date) catch |err| {
-                const error_msg = std.fmt.allocPrint(allocator, "Error filtering releases: {}", .{err}) catch "Unknown filter error";
-                result.error_msg = error_msg;
-                return;
-            };
-
-            result.releases = filtered;
-            print("✓ {s}: Found {} new releases\n", .{ provider_config.name, filtered.items.len });
-        } else |err| {
-            const error_msg = std.fmt.allocPrint(allocator, "Error fetching releases: {}", .{err}) catch "Unknown fetch error";
-            result.error_msg = error_msg;
-            print("✗ {s}: {s}\n", .{ provider_config.name, error_msg });
+            all_releases.deinit();
         }
-    } else {
-        print("Skipping {s} - no token provided\n", .{provider_config.name});
+
+        // Filter releases newer than latest known release
+        const filtered = filterNewReleases(allocator, all_releases.items, latest_release_date) catch |err| {
+            const error_msg = std.fmt.allocPrint(allocator, "Error filtering releases: {}", .{err}) catch "Unknown filter error";
+            result.error_msg = error_msg;
+            return;
+        };
+
+        result.releases = filtered;
+        print("✓ {s}: Found {} new releases\n", .{ provider.getName(), filtered.items.len });
+    } else |err| {
+        const error_msg = std.fmt.allocPrint(allocator, "Error fetching releases: {}", .{err}) catch "Unknown fetch error";
+        result.error_msg = error_msg;
+        print("✗ {s}: {s}\n", .{ provider.getName(), error_msg });
     }
 }

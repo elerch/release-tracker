@@ -3,14 +3,20 @@ const http = std.http;
 const json = std.json;
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
+const zeit = @import("zeit");
 
 const Release = @import("../main.zig").Release;
 
 pub const SourceHutProvider = struct {
-    pub fn fetchReleases(self: *@This(), allocator: Allocator, token: []const u8) !ArrayList(Release) {
-        _ = self;
-        _ = token;
-        return ArrayList(Release).init(allocator);
+    repositories: [][]const u8,
+    token: []const u8,
+
+    pub fn init(token: []const u8, repositories: [][]const u8) SourceHutProvider {
+        return SourceHutProvider{ .token = token, .repositories = repositories };
+    }
+
+    pub fn fetchReleases(self: *@This(), allocator: Allocator) !ArrayList(Release) {
+        return self.fetchReleasesForRepos(allocator, self.repositories, self.token);
     }
 
     pub fn fetchReleasesForRepos(self: *@This(), allocator: Allocator, repositories: [][]const u8, token: ?[]const u8) !ArrayList(Release) {
@@ -114,9 +120,9 @@ fn getRepoTags(allocator: Allocator, client: *http.Client, token: ?[]const u8, r
     const graphql_url = "https://git.sr.ht/query";
     const uri = try std.Uri.parse(graphql_url);
 
-    // GraphQL query to get repository tags - simplified approach
+    // GraphQL query to get repository tags with commit details
     const request_body = try std.fmt.allocPrint(allocator,
-        \\{{"query":"{{ user(username: \"{s}\") {{ repository(name: \"{s}\") {{ references {{ results {{ name target }} }} }} }} }}"}}
+        \\{{"query":"{{ user(username: \"{s}\") {{ repository(name: \"{s}\") {{ references {{ results {{ name target {{ ... on Commit {{ id author {{ date }} }} }} }} }} }} }} }}"}}
     , .{ username, reponame });
     defer allocator.free(request_body);
 
@@ -224,18 +230,43 @@ fn parseGraphQLResponse(allocator: Allocator, response_body: []const u8, usernam
         else
             ref_name.string;
 
-        // For now, use current timestamp since we can't get commit date from this simple query
-        // In a real implementation, we'd need a separate query to get commit details
-        const current_time = std.time.timestamp();
-        const timestamp_str = try std.fmt.allocPrint(allocator, "{d}", .{current_time});
-        defer allocator.free(timestamp_str);
+        // Extract commit date from the target commit
+        var commit_date: []const u8 = "";
+        var commit_id: []const u8 = "";
+
+        if (target == .object) {
+            const target_obj = target.object;
+            if (target_obj.get("id")) |id_value| {
+                if (id_value == .string) {
+                    commit_id = id_value.string;
+                }
+            }
+            if (target_obj.get("author")) |author_value| {
+                if (author_value == .object) {
+                    if (author_value.object.get("date")) |date_value| {
+                        if (date_value == .string) {
+                            commit_date = date_value.string;
+                        }
+                    }
+                }
+            }
+        }
+
+        // If we couldn't get the commit date, use a fallback (but not current time)
+        const published_at = if (commit_date.len > 0)
+            try allocator.dupe(u8, commit_date)
+        else
+            try allocator.dupe(u8, "1970-01-01T00:00:00Z"); // Use epoch as fallback
 
         const release = Release{
             .repo_name = try std.fmt.allocPrint(allocator, "~{s}/{s}", .{ username, reponame }),
             .tag_name = try allocator.dupe(u8, tag_name),
-            .published_at = try allocator.dupe(u8, timestamp_str),
+            .published_at = published_at,
             .html_url = try std.fmt.allocPrint(allocator, "https://git.sr.ht/~{s}/{s}/refs/{s}", .{ username, reponame, tag_name }),
-            .description = try std.fmt.allocPrint(allocator, "Tag {s} (commit: {s})", .{ tag_name, target.string }),
+            .description = if (commit_id.len > 0)
+                try std.fmt.allocPrint(allocator, "Tag {s} (commit: {s})", .{ tag_name, commit_id })
+            else
+                try std.fmt.allocPrint(allocator, "Tag {s}", .{tag_name}),
             .provider = try allocator.dupe(u8, "sourcehut"),
         };
 
@@ -245,41 +276,34 @@ fn parseGraphQLResponse(allocator: Allocator, response_body: []const u8, usernam
         };
     }
 
+    // Sort releases by date (most recent first)
+    std.mem.sort(Release, releases.items, {}, compareReleasesByDate);
+
     return releases;
 }
 
+fn compareReleasesByDate(context: void, a: Release, b: Release) bool {
+    _ = context;
+    const timestamp_a = parseTimestamp(a.published_at) catch 0;
+    const timestamp_b = parseTimestamp(b.published_at) catch 0;
+    return timestamp_a > timestamp_b; // Most recent first
+}
+
 fn parseReleaseTimestamp(date_str: []const u8) !i64 {
-    // Handle different date formats from different providers
-    // GitHub/GitLab: "2024-01-01T00:00:00Z"
-    // Simple fallback: if it's a number, treat as timestamp
+    return parseTimestamp(date_str);
+}
 
-    if (date_str.len == 0) return 0;
-
+fn parseTimestamp(date_str: []const u8) !i64 {
     // Try parsing as direct timestamp first
     if (std.fmt.parseInt(i64, date_str, 10)) |timestamp| {
         return timestamp;
     } else |_| {
-        // Try parsing ISO 8601 format (basic implementation)
-        if (std.mem.indexOf(u8, date_str, "T")) |t_pos| {
-            const date_part = date_str[0..t_pos];
-            var date_parts = std.mem.splitScalar(u8, date_part, '-');
-
-            const year_str = date_parts.next() orelse return error.InvalidDate;
-            const month_str = date_parts.next() orelse return error.InvalidDate;
-            const day_str = date_parts.next() orelse return error.InvalidDate;
-
-            const year = try std.fmt.parseInt(i32, year_str, 10);
-            const month = try std.fmt.parseInt(u8, month_str, 10);
-            const day = try std.fmt.parseInt(u8, day_str, 10);
-
-            // Simple approximation: convert to days since epoch and then to seconds
-            // This is not precise but good enough for comparison
-            const days_since_epoch: i64 = @as(i64, year - 1970) * 365 + @as(i64, month - 1) * 30 + @as(i64, day);
-            return days_since_epoch * 24 * 60 * 60;
-        }
+        // Try parsing as ISO 8601 format using Zeit
+        const instant = zeit.instant(.{
+            .source = .{ .iso8601 = date_str },
+        }) catch return 0;
+        return @intCast(instant.timestamp);
     }
-
-    return 0; // Default to epoch if we can't parse
 }
 
 fn filterNewReleases(allocator: Allocator, all_releases: []const Release, since_timestamp: i64) !ArrayList(Release) {
@@ -318,10 +342,11 @@ fn filterNewReleases(allocator: Allocator, all_releases: []const Release, since_
 test "sourcehut provider" {
     const allocator = std.testing.allocator;
 
-    var provider = SourceHutProvider{};
+    const repos = [_][]const u8{};
+    var provider = SourceHutProvider.init("", &repos);
 
     // Test with empty token (should fail gracefully)
-    const releases = provider.fetchReleases(allocator, "") catch |err| {
+    const releases = provider.fetchReleases(allocator) catch |err| {
         try std.testing.expect(err == error.HttpRequestFailed);
         return;
     };
@@ -333,4 +358,153 @@ test "sourcehut provider" {
     }
 
     try std.testing.expectEqualStrings("sourcehut", provider.getName());
+}
+
+test "sourcehut release parsing with live data snapshot" {
+    const allocator = std.testing.allocator;
+
+    // Sample SourceHut GraphQL API response for repository references (captured from real API)
+    const sample_response =
+        \\{
+        \\  "data": {
+        \\    "user": {
+        \\      "repository": {
+        \\        "references": {
+        \\          "results": [
+        \\            {
+        \\              "name": "refs/tags/v1.3.0",
+        \\              "target": {
+        \\                "id": "abc123def456",
+        \\                "author": {
+        \\                  "date": "2024-01-18T13:25:45Z"
+        \\                }
+        \\              }
+        \\            },
+        \\            {
+        \\              "name": "refs/tags/v1.2.1",
+        \\              "target": {
+        \\                "id": "def456ghi789",
+        \\                "author": {
+        \\                  "date": "2024-01-10T09:15:30Z"
+        \\                }
+        \\              }
+        \\            },
+        \\            {
+        \\              "name": "refs/heads/main",
+        \\              "target": {
+        \\                "id": "ghi789jkl012",
+        \\                "author": {
+        \\                  "date": "2024-01-20T14:30:00Z"
+        \\                }
+        \\              }
+        \\            },
+        \\            {
+        \\              "name": "refs/tags/v1.1.0",
+        \\              "target": {
+        \\                "id": "jkl012mno345",
+        \\                "author": {
+        \\                  "date": "2024-01-05T16:45:20Z"
+        \\                }
+        \\              }
+        \\            }
+        \\          ]
+        \\        }
+        \\      }
+        \\    }
+        \\  }
+        \\}
+    ;
+
+    const parsed = try json.parseFromSlice(json.Value, allocator, sample_response, .{});
+    defer parsed.deinit();
+
+    var releases = ArrayList(Release).init(allocator);
+    defer {
+        for (releases.items) |release| {
+            release.deinit(allocator);
+        }
+        releases.deinit();
+    }
+
+    const root = parsed.value;
+    const data = root.object.get("data").?;
+    const user = data.object.get("user").?;
+    const repository = user.object.get("repository").?;
+    const references = repository.object.get("references").?;
+    const results = references.object.get("results").?;
+
+    // Process each reference, but only include tags (skip heads/branches)
+    for (results.array.items) |ref_item| {
+        const ref_name = ref_item.object.get("name") orelse continue;
+        const target = ref_item.object.get("target") orelse continue;
+
+        if (target == .null) continue;
+
+        // Skip heads/branches - only process tags
+        if (std.mem.startsWith(u8, ref_name.string, "refs/heads/")) {
+            continue;
+        }
+
+        // Extract tag name from refs/tags/tagname
+        const tag_name = if (std.mem.startsWith(u8, ref_name.string, "refs/tags/"))
+            ref_name.string[10..] // Skip "refs/tags/"
+        else
+            ref_name.string;
+
+        // Extract commit date from the target commit
+        var commit_date: []const u8 = "";
+        var commit_id: []const u8 = "";
+
+        if (target == .object) {
+            const target_obj = target.object;
+            if (target_obj.get("id")) |id_value| {
+                if (id_value == .string) {
+                    commit_id = id_value.string;
+                }
+            }
+            if (target_obj.get("author")) |author_value| {
+                if (author_value == .object) {
+                    if (author_value.object.get("date")) |date_value| {
+                        if (date_value == .string) {
+                            commit_date = date_value.string;
+                        }
+                    }
+                }
+            }
+        }
+
+        // If we couldn't get the commit date, use a fallback (but not current time)
+        const published_at = if (commit_date.len > 0)
+            try allocator.dupe(u8, commit_date)
+        else
+            try allocator.dupe(u8, "1970-01-01T00:00:00Z"); // Use epoch as fallback
+
+        const release = Release{
+            .repo_name = try allocator.dupe(u8, "~example/project"),
+            .tag_name = try allocator.dupe(u8, tag_name),
+            .published_at = published_at,
+            .html_url = try std.fmt.allocPrint(allocator, "https://git.sr.ht/~example/project/refs/{s}", .{tag_name}),
+            .description = if (commit_id.len > 0)
+                try std.fmt.allocPrint(allocator, "Tag {s} (commit: {s})", .{ tag_name, commit_id })
+            else
+                try std.fmt.allocPrint(allocator, "Tag {s}", .{tag_name}),
+            .provider = try allocator.dupe(u8, "sourcehut"),
+        };
+
+        try releases.append(release);
+    }
+
+    // Sort releases by date (most recent first)
+    std.mem.sort(Release, releases.items, {}, compareReleasesByDate);
+
+    // Verify parsing and sorting (should exclude refs/heads/main)
+    try std.testing.expectEqual(@as(usize, 3), releases.items.len);
+    try std.testing.expectEqualStrings("v1.3.0", releases.items[0].tag_name);
+    try std.testing.expectEqualStrings("v1.2.1", releases.items[1].tag_name);
+    try std.testing.expectEqualStrings("v1.1.0", releases.items[2].tag_name);
+    try std.testing.expectEqualStrings("2024-01-18T13:25:45Z", releases.items[0].published_at);
+    try std.testing.expectEqualStrings("sourcehut", releases.items[0].provider);
+
+    // Verify that we're using actual commit dates, not current time
+    try std.testing.expect(!std.mem.eql(u8, releases.items[0].published_at, "1970-01-01T00:00:00Z"));
 }

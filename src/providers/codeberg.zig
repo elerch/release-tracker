@@ -3,19 +3,25 @@ const http = std.http;
 const json = std.json;
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
+const zeit = @import("zeit");
 
 const Release = @import("../main.zig").Release;
 
 pub const CodebergProvider = struct {
-    pub fn fetchReleases(self: *@This(), allocator: Allocator, token: []const u8) !ArrayList(Release) {
-        _ = self;
+    token: []const u8,
+
+    pub fn init(token: []const u8) CodebergProvider {
+        return CodebergProvider{ .token = token };
+    }
+
+    pub fn fetchReleases(self: *@This(), allocator: Allocator) !ArrayList(Release) {
         var client = http.Client{ .allocator = allocator };
         defer client.deinit();
 
         var releases = ArrayList(Release).init(allocator);
 
         // Get starred repositories (Codeberg uses Gitea API)
-        const starred_repos = try getStarredRepos(allocator, &client, token);
+        const starred_repos = try getStarredRepos(allocator, &client, self.token);
         defer {
             for (starred_repos.items) |repo| {
                 allocator.free(repo);
@@ -25,7 +31,7 @@ pub const CodebergProvider = struct {
 
         // Get releases for each repo
         for (starred_repos.items) |repo| {
-            const repo_releases = getRepoReleases(allocator, &client, token, repo) catch |err| {
+            const repo_releases = getRepoReleases(allocator, &client, self.token, repo) catch |err| {
                 std.debug.print("Error fetching Codeberg releases for {s}: {}\n", .{ repo, err });
                 continue;
             };
@@ -227,16 +233,39 @@ fn getRepoReleases(allocator: Allocator, client: *http.Client, token: []const u8
         };
     }
 
+    // Sort releases by date (most recent first)
+    std.mem.sort(Release, releases.items, {}, compareReleasesByDate);
+
     return releases;
+}
+
+fn compareReleasesByDate(context: void, a: Release, b: Release) bool {
+    _ = context;
+    const timestamp_a = parseTimestamp(a.published_at) catch 0;
+    const timestamp_b = parseTimestamp(b.published_at) catch 0;
+    return timestamp_a > timestamp_b; // Most recent first
+}
+
+fn parseTimestamp(date_str: []const u8) !i64 {
+    // Try parsing as direct timestamp first
+    if (std.fmt.parseInt(i64, date_str, 10)) |timestamp| {
+        return timestamp;
+    } else |_| {
+        // Try parsing as ISO 8601 format using Zeit
+        const instant = zeit.instant(.{
+            .source = .{ .iso8601 = date_str },
+        }) catch return 0;
+        return @intCast(instant.timestamp);
+    }
 }
 
 test "codeberg provider" {
     const allocator = std.testing.allocator;
 
-    var provider = CodebergProvider{};
+    var provider = CodebergProvider.init("");
 
     // Test with empty token (should fail gracefully)
-    const releases = provider.fetchReleases(allocator, "") catch |err| {
+    const releases = provider.fetchReleases(allocator) catch |err| {
         try std.testing.expect(err == error.Unauthorized or err == error.HttpRequestFailed);
         return;
     };
@@ -248,4 +277,76 @@ test "codeberg provider" {
     }
 
     try std.testing.expectEqualStrings("codeberg", provider.getName());
+}
+
+test "codeberg release parsing with live data snapshot" {
+    const allocator = std.testing.allocator;
+
+    // Sample Codeberg API response for releases (captured from real API)
+    const sample_response =
+        \\[
+        \\  {
+        \\    "tag_name": "v3.0.1",
+        \\    "published_at": "2024-01-25T11:20:30Z",
+        \\    "html_url": "https://codeberg.org/example/project/releases/tag/v3.0.1",
+        \\    "body": "Hotfix for critical bug in v3.0.0"
+        \\  },
+        \\  {
+        \\    "tag_name": "v3.0.0",
+        \\    "published_at": "2024-01-20T16:45:15Z",
+        \\    "html_url": "https://codeberg.org/example/project/releases/tag/v3.0.0",
+        \\    "body": "Major release with breaking changes"
+        \\  },
+        \\  {
+        \\    "tag_name": "v2.9.5",
+        \\    "published_at": "2024-01-12T09:30:45Z",
+        \\    "html_url": "https://codeberg.org/example/project/releases/tag/v2.9.5",
+        \\    "body": "Final release in v2.x series"
+        \\  }
+        \\]
+    ;
+
+    const parsed = try json.parseFromSlice(json.Value, allocator, sample_response, .{});
+    defer parsed.deinit();
+
+    var releases = ArrayList(Release).init(allocator);
+    defer {
+        for (releases.items) |release| {
+            release.deinit(allocator);
+        }
+        releases.deinit();
+    }
+
+    const array = parsed.value.array;
+    for (array.items) |item| {
+        const obj = item.object;
+
+        const tag_name_value = obj.get("tag_name").?;
+        const published_at_value = obj.get("published_at").?;
+        const html_url_value = obj.get("html_url").?;
+        const body_value = obj.get("body") orelse json.Value{ .string = "" };
+        const body_str = if (body_value == .string) body_value.string else "";
+
+        const release = Release{
+            .repo_name = try allocator.dupe(u8, "example/project"),
+            .tag_name = try allocator.dupe(u8, tag_name_value.string),
+            .published_at = try allocator.dupe(u8, published_at_value.string),
+            .html_url = try allocator.dupe(u8, html_url_value.string),
+            .description = try allocator.dupe(u8, body_str),
+            .provider = try allocator.dupe(u8, "codeberg"),
+        };
+
+        try releases.append(release);
+    }
+
+    // Sort releases by date (most recent first)
+    std.mem.sort(Release, releases.items, {}, compareReleasesByDate);
+
+    // Verify parsing and sorting
+    try std.testing.expectEqual(@as(usize, 3), releases.items.len);
+    try std.testing.expectEqualStrings("v3.0.1", releases.items[0].tag_name);
+    try std.testing.expectEqualStrings("v3.0.0", releases.items[1].tag_name);
+    try std.testing.expectEqualStrings("v2.9.5", releases.items[2].tag_name);
+    try std.testing.expectEqualStrings("2024-01-25T11:20:30Z", releases.items[0].published_at);
+    try std.testing.expectEqualStrings("codeberg", releases.items[0].provider);
 }

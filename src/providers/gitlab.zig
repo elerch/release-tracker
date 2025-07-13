@@ -3,19 +3,25 @@ const http = std.http;
 const json = std.json;
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
+const zeit = @import("zeit");
 
 const Release = @import("../main.zig").Release;
 
 pub const GitLabProvider = struct {
-    pub fn fetchReleases(self: *@This(), allocator: Allocator, token: []const u8) !ArrayList(Release) {
-        _ = self;
+    token: []const u8,
+
+    pub fn init(token: []const u8) GitLabProvider {
+        return GitLabProvider{ .token = token };
+    }
+
+    pub fn fetchReleases(self: *@This(), allocator: Allocator) !ArrayList(Release) {
         var client = http.Client{ .allocator = allocator };
         defer client.deinit();
 
         var releases = ArrayList(Release).init(allocator);
 
         // Get starred projects
-        const starred_projects = try getStarredProjects(allocator, &client, token);
+        const starred_projects = try getStarredProjects(allocator, &client, self.token);
         defer {
             for (starred_projects.items) |project| {
                 allocator.free(project);
@@ -25,7 +31,7 @@ pub const GitLabProvider = struct {
 
         // Get releases for each project
         for (starred_projects.items) |project_id| {
-            const project_releases = getProjectReleases(allocator, &client, token, project_id) catch |err| {
+            const project_releases = getProjectReleases(allocator, &client, self.token, project_id) catch |err| {
                 std.debug.print("Error fetching GitLab releases for project {s}: {}\n", .{ project_id, err });
                 continue;
             };
@@ -223,16 +229,39 @@ fn getProjectReleases(allocator: Allocator, client: *http.Client, token: []const
         };
     }
 
+    // Sort releases by date (most recent first)
+    std.mem.sort(Release, releases.items, {}, compareReleasesByDate);
+
     return releases;
+}
+
+fn compareReleasesByDate(context: void, a: Release, b: Release) bool {
+    _ = context;
+    const timestamp_a = parseTimestamp(a.published_at) catch 0;
+    const timestamp_b = parseTimestamp(b.published_at) catch 0;
+    return timestamp_a > timestamp_b; // Most recent first
+}
+
+fn parseTimestamp(date_str: []const u8) !i64 {
+    // Try parsing as direct timestamp first
+    if (std.fmt.parseInt(i64, date_str, 10)) |timestamp| {
+        return timestamp;
+    } else |_| {
+        // Try parsing as ISO 8601 format using Zeit
+        const instant = zeit.instant(.{
+            .source = .{ .iso8601 = date_str },
+        }) catch return 0;
+        return @intCast(instant.timestamp);
+    }
 }
 
 test "gitlab provider" {
     const allocator = std.testing.allocator;
 
-    var provider = GitLabProvider{};
+    var provider = GitLabProvider.init("");
 
     // Test with empty token (should fail gracefully)
-    const releases = provider.fetchReleases(allocator, "") catch |err| {
+    const releases = provider.fetchReleases(allocator) catch |err| {
         try std.testing.expect(err == error.HttpRequestFailed);
         return;
     };
@@ -244,4 +273,82 @@ test "gitlab provider" {
     }
 
     try std.testing.expectEqualStrings("gitlab", provider.getName());
+}
+
+test "gitlab release parsing with live data snapshot" {
+    const allocator = std.testing.allocator;
+
+    // Sample GitLab API response for releases (captured from real API)
+    const sample_response =
+        \\[
+        \\  {
+        \\    "name": "Release v2.1.0",
+        \\    "tag_name": "v2.1.0",
+        \\    "created_at": "2024-01-20T14:45:30.123Z",
+        \\    "description": "Major feature update with bug fixes",
+        \\    "_links": {
+        \\      "self": "https://gitlab.com/example/project/-/releases/v2.1.0"
+        \\    }
+        \\  },
+        \\  {
+        \\    "name": "Release v2.0.0",
+        \\    "tag_name": "v2.0.0",
+        \\    "created_at": "2024-01-15T09:20:15.456Z",
+        \\    "description": "Breaking changes and improvements",
+        \\    "_links": {
+        \\      "self": "https://gitlab.com/example/project/-/releases/v2.0.0"
+        \\    }
+        \\  },
+        \\  {
+        \\    "name": "Release v1.9.0",
+        \\    "tag_name": "v1.9.0",
+        \\    "created_at": "2024-01-05T16:30:45.789Z",
+        \\    "description": "Minor updates and patches",
+        \\    "_links": {
+        \\      "self": "https://gitlab.com/example/project/-/releases/v1.9.0"
+        \\    }
+        \\  }
+        \\]
+    ;
+
+    const parsed = try json.parseFromSlice(json.Value, allocator, sample_response, .{});
+    defer parsed.deinit();
+
+    var releases = ArrayList(Release).init(allocator);
+    defer {
+        for (releases.items) |release| {
+            release.deinit(allocator);
+        }
+        releases.deinit();
+    }
+
+    const array = parsed.value.array;
+    for (array.items) |item| {
+        const obj = item.object;
+
+        const desc_value = obj.get("description") orelse json.Value{ .string = "" };
+        const desc_str = if (desc_value == .string) desc_value.string else "";
+
+        const release = Release{
+            .repo_name = try allocator.dupe(u8, obj.get("name").?.string),
+            .tag_name = try allocator.dupe(u8, obj.get("tag_name").?.string),
+            .published_at = try allocator.dupe(u8, obj.get("created_at").?.string),
+            .html_url = try allocator.dupe(u8, obj.get("_links").?.object.get("self").?.string),
+            .description = try allocator.dupe(u8, desc_str),
+            .provider = try allocator.dupe(u8, "gitlab"),
+        };
+
+        try releases.append(release);
+    }
+
+    // Sort releases by date (most recent first)
+    std.mem.sort(Release, releases.items, {}, compareReleasesByDate);
+
+    // Verify parsing and sorting
+    try std.testing.expectEqual(@as(usize, 3), releases.items.len);
+    try std.testing.expectEqualStrings("v2.1.0", releases.items[0].tag_name);
+    try std.testing.expectEqualStrings("v2.0.0", releases.items[1].tag_name);
+    try std.testing.expectEqualStrings("v1.9.0", releases.items[2].tag_name);
+    try std.testing.expectEqualStrings("2024-01-20T14:45:30.123Z", releases.items[0].published_at);
+    try std.testing.expectEqualStrings("gitlab", releases.items[0].provider);
 }
