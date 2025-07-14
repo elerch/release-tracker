@@ -65,6 +65,27 @@ Run the test suite:
 zig build test
 ```
 
+Run integration tests:
+
+```bash
+zig build test -Dintegration=true
+```
+
+Enable debug output in tests (useful for debugging test failures):
+
+```bash
+zig build test -Dintegration=true -Dtest-debug=true
+```
+
+Test individual providers:
+
+```bash
+zig build test-github
+zig build test-gitlab
+zig build test-codeberg
+zig build test-sourcehut
+```
+
 ## Deployment
 
 This tool is designed to be run periodically (e.g., via cron) and commit the generated RSS file to a Git repository that can be deployed via Cloudflare Pages or similar static hosting services.

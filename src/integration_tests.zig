@@ -1,6 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
 const ArrayList = std.ArrayList;
+const build_options = @import("build_options");
 
 const atom = @import("atom.zig");
 const Release = @import("main.zig").Release;
@@ -9,6 +10,12 @@ const GitLab = @import("providers/GitLab.zig");
 const Codeberg = @import("providers/Codeberg.zig");
 const SourceHut = @import("providers/SourceHut.zig");
 const config = @import("config.zig");
+
+fn testPrint(comptime fmt: []const u8, args: anytype) void {
+    if (build_options.test_debug) {
+        std.debug.print(fmt, args);
+    }
+}
 
 test "Atom feed validates against W3C validator" {
     const allocator = testing.allocator;
@@ -43,26 +50,26 @@ test "Atom feed validates against W3C validator" {
     try testing.expect(std.mem.indexOf(u8, atom_content, "<feed xmlns=\"http://www.w3.org/2005/Atom\">") != null);
     try testing.expect(std.mem.indexOf(u8, atom_content, "</feed>") != null);
 
-    std.debug.print("Atom feed structure validation passed\n", .{});
+    testPrint("Atom feed structure validation passed\n", .{});
 }
 test "GitHub provider integration" {
     const allocator = testing.allocator;
 
     // Load config to get token
     const app_config = config.loadConfig(allocator, "config.json") catch |err| {
-        std.debug.print("Skipping GitHub test - config not available: {}\n", .{err});
+        testPrint("Skipping GitHub test - config not available: {}\n", .{err});
         return;
     };
     defer app_config.deinit();
 
     if (app_config.github_token == null) {
-        std.debug.print("Skipping GitHub test - no token configured\n", .{});
+        testPrint("Skipping GitHub test - no token configured\n", .{});
         return;
     }
 
     var provider = GitHub.init(app_config.github_token.?);
     const releases = provider.fetchReleases(allocator) catch |err| {
-        std.debug.print("GitHub provider error: {}\n", .{err});
+        testPrint("GitHub provider error: {}\n", .{err});
         return;
     };
     defer {
@@ -72,7 +79,7 @@ test "GitHub provider integration" {
         releases.deinit();
     }
 
-    std.debug.print("GitHub: Found {} releases\n", .{releases.items.len});
+    testPrint("GitHub: Found {} releases\n", .{releases.items.len});
 
     // Verify releases have required fields
     for (releases.items) |release| {
@@ -88,19 +95,19 @@ test "GitLab provider integration" {
 
     // Load config to get token
     const app_config = config.loadConfig(allocator, "config.json") catch |err| {
-        std.debug.print("Skipping GitLab test - config not available: {}\n", .{err});
+        testPrint("Skipping GitLab test - config not available: {}\n", .{err});
         return;
     };
     defer app_config.deinit();
 
     if (app_config.gitlab_token == null) {
-        std.debug.print("Skipping GitLab test - no token configured\n", .{});
+        testPrint("Skipping GitLab test - no token configured\n", .{});
         return;
     }
 
     var provider = GitLab.init(app_config.gitlab_token.?);
     const releases = provider.fetchReleases(allocator) catch |err| {
-        std.debug.print("GitLab provider error: {}\n", .{err});
+        testPrint("GitLab provider error: {}\n", .{err});
         return; // Skip test if provider fails
     };
     defer {
@@ -110,7 +117,7 @@ test "GitLab provider integration" {
         releases.deinit();
     }
 
-    std.debug.print("GitLab: Found {} releases\n", .{releases.items.len});
+    testPrint("GitLab: Found {} releases\n", .{releases.items.len});
 
     // Note: It's normal for starred projects to have 0 releases if they don't use GitLab's release feature
     // The test passes as long as we can successfully fetch the starred projects and check for releases
@@ -129,19 +136,19 @@ test "Codeberg provider integration" {
 
     // Load config to get token
     const app_config = config.loadConfig(allocator, "config.json") catch |err| {
-        std.debug.print("Skipping Codeberg test - config not available: {}\n", .{err});
+        testPrint("Skipping Codeberg test - config not available: {}\n", .{err});
         return;
     };
     defer app_config.deinit();
 
     if (app_config.codeberg_token == null) {
-        std.debug.print("Skipping Codeberg test - no token configured\n", .{});
+        testPrint("Skipping Codeberg test - no token configured\n", .{});
         return;
     }
 
     var provider = Codeberg.init(app_config.codeberg_token.?);
     const releases = provider.fetchReleases(allocator) catch |err| {
-        std.debug.print("Codeberg provider error: {}\n", .{err});
+        testPrint("Codeberg provider error: {}\n", .{err});
         return; // Skip test if provider fails
     };
     defer {
@@ -151,7 +158,7 @@ test "Codeberg provider integration" {
         releases.deinit();
     }
 
-    std.debug.print("Codeberg: Found {} releases\n", .{releases.items.len});
+    testPrint("Codeberg: Found {} releases\n", .{releases.items.len});
 
     // Verify releases have required fields
     for (releases.items) |release| {
@@ -167,19 +174,19 @@ test "SourceHut provider integration" {
 
     // Load config to get repositories
     const app_config = config.loadConfig(allocator, "config.json") catch |err| {
-        std.debug.print("Skipping SourceHut test - config not available: {}\n", .{err});
+        testPrint("Skipping SourceHut test - config not available: {}\n", .{err});
         return;
     };
     defer app_config.deinit();
 
     if (app_config.sourcehut == null or app_config.sourcehut.?.repositories.len == 0) {
-        std.debug.print("Skipping SourceHut test - no repositories configured\n", .{});
+        testPrint("Skipping SourceHut test - no repositories configured\n", .{});
         return;
     }
 
     var provider = SourceHut.init(app_config.sourcehut.?.token.?, app_config.sourcehut.?.repositories);
     const releases = provider.fetchReleases(allocator) catch |err| {
-        std.debug.print("SourceHut provider error: {}\n", .{err});
+        testPrint("SourceHut provider error: {}\n", .{err});
         return; // Skip test if provider fails
     };
     defer {
@@ -189,7 +196,7 @@ test "SourceHut provider integration" {
         releases.deinit();
     }
 
-    std.debug.print("SourceHut: Found {} releases\n", .{releases.items.len});
+    testPrint("SourceHut: Found {} releases\n", .{releases.items.len});
 
     // Verify releases have required fields
     for (releases.items) |release| {
@@ -205,13 +212,13 @@ test "SourceHut commit date fetching" {
 
     // Load config to get repositories
     const app_config = config.loadConfig(allocator, "config.json") catch |err| {
-        std.debug.print("Skipping SourceHut commit date test - config not available: {}\n", .{err});
+        testPrint("Skipping SourceHut commit date test - config not available: {}\n", .{err});
         return;
     };
     defer app_config.deinit();
 
     if (app_config.sourcehut == null or app_config.sourcehut.?.repositories.len == 0) {
-        std.debug.print("Skipping SourceHut commit date test - no repositories configured\n", .{});
+        testPrint("Skipping SourceHut commit date test - no repositories configured\n", .{});
         return;
     }
 
@@ -220,7 +227,7 @@ test "SourceHut commit date fetching" {
     var provider = SourceHut.init(app_config.sourcehut.?.token.?, test_repos[0..]);
 
     const releases = provider.fetchReleases(allocator) catch |err| {
-        std.debug.print("SourceHut commit date test error: {}\n", .{err});
+        testPrint("SourceHut commit date test error: {}\n", .{err});
         return;
     };
     defer {
@@ -230,11 +237,11 @@ test "SourceHut commit date fetching" {
         releases.deinit();
     }
 
-    std.debug.print("SourceHut commit date test: Found {} releases from {s}\n", .{ releases.items.len, test_repos[0] });
+    testPrint("SourceHut commit date test: Found {} releases from {s}\n", .{ releases.items.len, test_repos[0] });
 
     // Verify we have some releases
     if (releases.items.len == 0) {
-        std.debug.print("FAIL: No releases found from SourceHut repository {s}\n", .{test_repos[0]});
+        testPrint("FAIL: No releases found from SourceHut repository {s}\n", .{test_repos[0]});
         try testing.expect(false); // Force test failure - we should be able to fetch releases
     }
 
@@ -243,7 +250,7 @@ test "SourceHut commit date fetching" {
 
     // Check commit dates
     for (releases.items) |release| {
-        std.debug.print("Release: {s} - Date: {s}\n", .{ release.tag_name, release.published_at });
+        testPrint("Release: {s} - Date: {s}\n", .{ release.tag_name, release.published_at });
 
         // Verify basic fields
         try testing.expect(release.repo_name.len > 0);
@@ -255,10 +262,10 @@ test "SourceHut commit date fetching" {
         // Check if we got a real commit date vs epoch fallback
         if (std.mem.eql(u8, release.published_at, "1970-01-01T00:00:00Z")) {
             epoch_dates += 1;
-            std.debug.print("  -> Using epoch fallback date\n", .{});
+            testPrint("  -> Using epoch fallback date\n", .{});
         } else {
             valid_dates += 1;
-            std.debug.print("  -> Got real commit date\n", .{});
+            testPrint("  -> Got real commit date\n", .{});
 
             // Verify the date format looks reasonable (should be ISO 8601)
             try testing.expect(release.published_at.len >= 19); // At least YYYY-MM-DDTHH:MM:SS
@@ -266,17 +273,17 @@ test "SourceHut commit date fetching" {
         }
     }
 
-    std.debug.print("SourceHut commit date summary: {} valid dates, {} epoch fallbacks\n", .{ valid_dates, epoch_dates });
+    testPrint("SourceHut commit date summary: {} valid dates, {} epoch fallbacks\n", .{ valid_dates, epoch_dates });
 
     // We should have at least some valid commit dates
     // If all dates are epoch fallbacks, something is wrong with our commit date fetching
     if (releases.items.len > 0) {
         const success_rate = (valid_dates * 100) / releases.items.len;
-        std.debug.print("Commit date success rate: {}%\n", .{success_rate});
+        testPrint("Commit date success rate: {}%\n", .{success_rate});
 
         // Test should fail if we can't fetch any real commit dates
         if (valid_dates == 0) {
-            std.debug.print("FAIL: No valid commit dates were fetched from SourceHut\n", .{});
+            testPrint("FAIL: No valid commit dates were fetched from SourceHut\n", .{});
             try testing.expect(false); // Force test failure
         }
 

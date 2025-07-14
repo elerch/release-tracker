@@ -1,6 +1,5 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const print = std.debug.print;
 const ArrayList = std.ArrayList;
 const Allocator = std.mem.Allocator;
 const Thread = std.Thread;
@@ -17,6 +16,17 @@ const xml_parser = @import("xml_parser.zig");
 const zeit = @import("zeit");
 
 const Provider = @import("Provider.zig");
+
+fn print(comptime fmt: []const u8, args: anytype) void {
+    if (comptime @import("builtin").is_test) {
+        const build_options = @import("build_options");
+        if (build_options.test_debug) {
+            std.debug.print(fmt, args);
+        }
+    } else {
+        std.debug.print(fmt, args);
+    }
+}
 
 // Configuration: Only include releases from the last year in the output
 const RELEASE_AGE_LIMIT_SECONDS: i64 = 365 * 24 * 60 * 60; // 1 year in seconds
