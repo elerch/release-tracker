@@ -18,7 +18,7 @@ repos:
       - id: zlint
         name: Run zig build test
         entry: zig
-        args: ["build", "--verbose", "smoke-test"]
+        args: ["build", "--verbose", "test"]
         language: system
         types: [file]
         pass_filenames: false
