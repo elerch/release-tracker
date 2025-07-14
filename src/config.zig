@@ -45,7 +45,11 @@ pub fn loadConfig(allocator: Allocator, path: []const u8) !Config {
     const content = try file.readToEndAlloc(allocator, 1024 * 1024);
     defer allocator.free(content);
 
-    const parsed = try json.parseFromSlice(json.Value, allocator, content, .{});
+    return parseConfigFromJson(allocator, content);
+}
+
+pub fn parseConfigFromJson(allocator: Allocator, json_content: []const u8) !Config {
+    const parsed = try json.parseFromSlice(json.Value, allocator, json_content, .{});
     defer parsed.deinit();
 
     const root = parsed.value.object;

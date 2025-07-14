@@ -10,7 +10,7 @@ const SourceHutConfig = config.SourceHutConfig;
 test "Config loading without last_check field" {
     const allocator = std.testing.allocator;
 
-    // Create a test config file without last_check
+    // Create a test config JSON content without last_check
     const test_config_content =
         \\{
         \\  "github_token": "test_token",
@@ -22,18 +22,8 @@ test "Config loading without last_check field" {
         \\}
     ;
 
-    const temp_config_file = "test_config_no_last_check.json";
-
-    // Write test config to file
-    {
-        const file = try std.fs.cwd().createFile(temp_config_file, .{});
-        defer file.close();
-        try file.writeAll(test_config_content);
-    }
-    defer std.fs.cwd().deleteFile(temp_config_file) catch {};
-
-    // Load config
-    const loaded_config = try config.loadConfig(allocator, temp_config_file);
+    // Parse config directly from JSON content
+    const loaded_config = try config.parseConfigFromJson(allocator, test_config_content);
     defer loaded_config.deinit();
 
     // Verify config was loaded correctly

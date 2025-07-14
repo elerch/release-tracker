@@ -221,15 +221,16 @@ fn loadExistingReleases(allocator: Allocator, filename: []const u8) !ArrayList(R
     const content = try file.readToEndAlloc(allocator, 10 * 1024 * 1024);
     defer allocator.free(content);
 
-    print("Loading existing releases from {s}...\n", .{filename});
+    return parseReleasesFromXml(allocator, content);
+}
 
-    const releases = xml_parser.parseAtomFeed(allocator, content) catch |err| {
-        print("Warning: Failed to parse existing releases file: {}\n", .{err});
+fn parseReleasesFromXml(allocator: Allocator, xml_content: []const u8) !ArrayList(Release) {
+    const releases = xml_parser.parseAtomFeed(allocator, xml_content) catch |err| {
+        print("Warning: Failed to parse XML content: {}\n", .{err});
         print("Starting fresh with no existing releases\n", .{});
         return ArrayList(Release).init(allocator);
     };
 
-    print("Loaded {} existing releases\n", .{releases.items.len});
     return releases;
 }
 
@@ -451,7 +452,7 @@ test "Atom feed has correct structure" {
 test "loadExistingReleases with valid XML" {
     const allocator = std.testing.allocator;
 
-    // Create a temporary file with valid Atom XML
+    // Test XML content
     const test_xml =
         \\<?xml version="1.0" encoding="UTF-8"?>
         \\<feed xmlns="http://www.w3.org/2005/Atom">
@@ -466,18 +467,8 @@ test "loadExistingReleases with valid XML" {
         \\</feed>
     ;
 
-    const temp_filename = "test_releases.xml";
-
-    // Write test XML to file
-    {
-        const file = try std.fs.cwd().createFile(temp_filename, .{});
-        defer file.close();
-        try file.writeAll(test_xml);
-    }
-    defer std.fs.cwd().deleteFile(temp_filename) catch {};
-
-    // Load existing releases
-    var releases = try loadExistingReleases(allocator, temp_filename);
+    // Parse releases directly from XML content
+    var releases = try parseReleasesFromXml(allocator, test_xml);
     defer {
         for (releases.items) |release| {
             release.deinit(allocator);
@@ -503,18 +494,9 @@ test "loadExistingReleases with malformed XML" {
     const allocator = std.testing.allocator;
 
     const malformed_xml = "This is not valid XML at all!";
-    const temp_filename = "test_malformed.xml";
-
-    // Write malformed XML to file
-    {
-        const file = try std.fs.cwd().createFile(temp_filename, .{});
-        defer file.close();
-        try file.writeAll(malformed_xml);
-    }
-    defer std.fs.cwd().deleteFile(temp_filename) catch {};
 
     // Should handle gracefully and return empty list
-    var releases = try loadExistingReleases(allocator, temp_filename);
+    var releases = try parseReleasesFromXml(allocator, malformed_xml);
     defer releases.deinit();
 
     try std.testing.expectEqual(@as(usize, 0), releases.items.len);
@@ -596,18 +578,8 @@ test "loadExistingReleases handles various XML structures" {
         \\</feed>
     ;
 
-    const temp_filename = "test_minimal.xml";
-
-    // Write test XML to file
-    {
-        const file = try std.fs.cwd().createFile(temp_filename, .{});
-        defer file.close();
-        try file.writeAll(minimal_xml);
-    }
-    defer std.fs.cwd().deleteFile(temp_filename) catch {};
-
-    // Load existing releases
-    var releases = try loadExistingReleases(allocator, temp_filename);
+    // Parse releases directly from XML content
+    var releases = try parseReleasesFromXml(allocator, minimal_xml);
     defer {
         for (releases.items) |release| {
             release.deinit(allocator);
@@ -655,18 +627,8 @@ test "loadExistingReleases with complex XML content" {
         \\</feed>
     ;
 
-    const temp_filename = "test_complex.xml";
-
-    // Write test XML to file
-    {
-        const file = try std.fs.cwd().createFile(temp_filename, .{});
-        defer file.close();
-        try file.writeAll(complex_xml);
-    }
-    defer std.fs.cwd().deleteFile(temp_filename) catch {};
-
-    // Load existing releases
-    var releases = try loadExistingReleases(allocator, temp_filename);
+    // Parse releases directly from XML content
+    var releases = try parseReleasesFromXml(allocator, complex_xml);
     defer {
         for (releases.items) |release| {
             release.deinit(allocator);
