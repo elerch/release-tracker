@@ -1,8 +1,6 @@
 # Release Tracker
 
-A Zig application that monitors releases from starred repositories across GitHub, GitLab, Codeberg, and SourceHut, generating an RSS feed for easy consumption.
-
-Needs to be able to rotate PAT on GitLab
+A Zig application that monitors releases from starred repositories across GitHub, GitLab, Codeberg, and SourceHut, generating an RSS feed for easy consumption. Note that this application was primarily AI generated
 
 ## Features
 
