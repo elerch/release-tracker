@@ -28,6 +28,17 @@ fn print(comptime fmt: []const u8, args: anytype) void {
     }
 }
 
+// Error output functions that work in release mode
+fn printError(comptime fmt: []const u8, args: anytype) void {
+    const stderr = std.io.getStdErr().writer();
+    stderr.print(fmt, args) catch {};
+}
+
+fn printInfo(comptime fmt: []const u8, args: anytype) void {
+    const stderr = std.io.getStdErr().writer();
+    stderr.print(fmt, args) catch {};
+}
+
 // Configuration: Only include releases from the last year in the output
 const RELEASE_AGE_LIMIT_SECONDS: i64 = 365 * 24 * 60 * 60; // 1 year in seconds
 
@@ -89,7 +100,7 @@ pub fn main() !u8 {
     const config_path = args[1];
     const output_file = if (args.len >= 3) args[2] else "releases.xml";
     var app_config = config.loadConfig(allocator, config_path) catch |err| {
-        print("Error loading config: {}\n", .{err});
+        printError("Error loading config: {}\n", .{err});
         return 1;
     };
     defer app_config.deinit();
@@ -111,7 +122,7 @@ pub fn main() !u8 {
         new_releases.deinit();
     }
 
-    print("Fetching releases from all providers concurrently...\n", .{});
+    printInfo("Fetching releases from all providers concurrently...\n", .{});
 
     // Create providers list
     var providers = std.ArrayList(Provider).init(allocator);
@@ -154,10 +165,25 @@ pub fn main() !u8 {
         allocator.free(provider_results);
     }
 
+    // Check for provider errors and report them
+    var has_errors = false;
+    for (provider_results) |result| {
+        if (result.error_msg) |error_msg| {
+            printError("✗ {s}: {s}\n", .{ result.provider_name, error_msg });
+            has_errors = true;
+        }
+    }
+
+    // If any provider failed, exit with error code
+    if (has_errors) {
+        printError("One or more providers failed to fetch releases\n", .{});
+        return 1;
+    }
+
     // Combine all new releases from threaded providers
     for (provider_results) |result| {
         try new_releases.appendSlice(result.releases.items);
-        print("Found {} new releases from {s}\n", .{ result.releases.items.len, result.provider_name });
+        printInfo("Found {} new releases from {s}\n", .{ result.releases.items.len, result.provider_name });
     }
 
     // Combine all releases (existing and new)
@@ -201,9 +227,9 @@ pub fn main() !u8 {
     try file.writeAll(atom_content);
 
     // Log to stderr for user feedback
-    std.debug.print("Found {} new releases\n", .{new_releases.items.len});
-    std.debug.print("Total releases in feed: {} (filtered from {} total, showing last {} days)\n", .{ all_releases.items.len, original_count, @divTrunc(RELEASE_AGE_LIMIT_SECONDS, 24 * 60 * 60) });
-    std.debug.print("Updated feed written to: {s}\n", .{output_file});
+    printInfo("Found {} new releases\n", .{new_releases.items.len});
+    printInfo("Total releases in feed: {} (filtered from {} total, showing last {} days)\n", .{ all_releases.items.len, original_count, @divTrunc(RELEASE_AGE_LIMIT_SECONDS, 24 * 60 * 60) });
+    printInfo("Updated feed written to: {s}\n", .{output_file});
 
     return 0;
 }
@@ -211,7 +237,7 @@ pub fn main() !u8 {
 fn loadExistingReleases(allocator: Allocator, filename: []const u8) !ArrayList(Release) {
     const file = std.fs.cwd().openFile(filename, .{}) catch |err| switch (err) {
         error.FileNotFound => {
-            print("No existing releases file found, starting fresh\n", .{});
+            printInfo("No existing releases file found, starting fresh\n", .{});
             return ArrayList(Release).init(allocator);
         },
         else => return err,
@@ -221,13 +247,16 @@ fn loadExistingReleases(allocator: Allocator, filename: []const u8) !ArrayList(R
     const content = try file.readToEndAlloc(allocator, 10 * 1024 * 1024);
     defer allocator.free(content);
 
-    return parseReleasesFromXml(allocator, content);
+    printInfo("Loading existing releases from {s}...\n", .{filename});
+    const releases = try parseReleasesFromXml(allocator, content);
+    printInfo("Loaded {} existing releases\n", .{releases.items.len});
+    return releases;
 }
 
 fn parseReleasesFromXml(allocator: Allocator, xml_content: []const u8) !ArrayList(Release) {
     const releases = xml_parser.parseAtomFeed(allocator, xml_content) catch |err| {
-        print("Warning: Failed to parse XML content: {}\n", .{err});
-        print("Starting fresh with no existing releases\n", .{});
+        printError("Warning: Failed to parse XML content: {}\n", .{err});
+        printInfo("Starting fresh with no existing releases\n", .{});
         return ArrayList(Release).init(allocator);
     };
 
@@ -370,7 +399,7 @@ fn fetchProviderReleases(context: *const ThreadContext) void {
 
     const since_str = formatTimestampForDisplay(allocator, latest_release_date) catch "unknown";
     defer if (!std.mem.eql(u8, since_str, "unknown")) allocator.free(since_str);
-    print("Fetching releases from {s} (since: {s})...\n", .{ provider.getName(), since_str });
+    printInfo("Fetching releases from {s} (since: {s})...\n", .{ provider.getName(), since_str });
 
     if (provider.fetchReleases(allocator)) |all_releases| {
         defer {
@@ -388,11 +417,11 @@ fn fetchProviderReleases(context: *const ThreadContext) void {
         };
 
         result.releases = filtered;
-        print("✓ {s}: Found {} new releases\n", .{ provider.getName(), filtered.items.len });
+        printInfo("✓ {s}: Found {} new releases\n", .{ provider.getName(), filtered.items.len });
     } else |err| {
         const error_msg = std.fmt.allocPrint(allocator, "Error fetching releases: {}", .{err}) catch "Unknown fetch error";
         result.error_msg = error_msg;
-        print("✗ {s}: {s}\n", .{ provider.getName(), error_msg });
+        // Don't print error here - it will be handled in main function
     }
 }
 

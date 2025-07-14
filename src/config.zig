@@ -34,7 +34,8 @@ pub const Config = struct {
 pub fn loadConfig(allocator: Allocator, path: []const u8) !Config {
     const file = std.fs.cwd().openFile(path, .{}) catch |err| switch (err) {
         error.FileNotFound => {
-            std.debug.print("Config file not found, creating default config at {s}\n", .{path});
+            const stderr = std.io.getStdErr().writer();
+            stderr.print("Config file not found, creating default config at {s}\n", .{path}) catch {};
             try createDefaultConfig(path);
             return Config{ .allocator = allocator };
         },

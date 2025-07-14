@@ -33,12 +33,14 @@ pub fn fetchReleasesForRepos(self: *Self, allocator: Allocator, repositories: []
     }
 
     const auth_token = token orelse {
-        std.debug.print("SourceHut: No token provided, skipping\n", .{});
+        const stderr = std.io.getStdErr().writer();
+        stderr.print("SourceHut: No token provided, skipping\n", .{}) catch {};
         return ArrayList(Release).init(allocator);
     };
 
     if (auth_token.len == 0) {
-        std.debug.print("SourceHut: Empty token, skipping\n", .{});
+        const stderr = std.io.getStdErr().writer();
+        stderr.print("SourceHut: Empty token, skipping\n", .{}) catch {};
         return ArrayList(Release).init(allocator);
     }
 
@@ -97,7 +99,8 @@ fn fetchReleasesMultiRepo(allocator: Allocator, client: *http.Client, token: []c
 
     for (repositories) |repo| {
         const parsed = parseRepoFormat(allocator, repo) catch |err| {
-            std.debug.print("Invalid repo format '{s}': {}\n", .{ repo, err });
+            const stderr = std.io.getStdErr().writer();
+            stderr.print("Invalid repo format '{s}': {}\n", .{ repo, err }) catch {};
             continue;
         };
         try parsed_repos.append(parsed);
@@ -109,7 +112,8 @@ fn fetchReleasesMultiRepo(allocator: Allocator, client: *http.Client, token: []c
 
     // Step 1: Get all references for all repositories in one query
     const all_tag_data = getAllReferencesMultiRepo(allocator, client, token, parsed_repos.items) catch |err| {
-        std.debug.print("Failed to get references: {}\n", .{err});
+        const stderr = std.io.getStdErr().writer();
+        stderr.print("Failed to get references: {}\n", .{err}) catch {};
         return releases;
     };
     defer {
@@ -128,7 +132,8 @@ fn fetchReleasesMultiRepo(allocator: Allocator, client: *http.Client, token: []c
 
     // Step 2: Get commit dates for all commits in one query
     const commit_dates = getAllCommitDatesMultiRepo(allocator, client, token, parsed_repos.items, all_tag_data.items) catch |err| {
-        std.debug.print("Failed to get commit dates: {}\n", .{err});
+        const stderr = std.io.getStdErr().writer();
+        stderr.print("Failed to get commit dates: {}\n", .{err}) catch {};
         return releases;
     };
     defer {
@@ -261,7 +266,8 @@ fn getAllReferencesMultiRepo(allocator: Allocator, client: *http.Client, token: 
 
     // Parse the response and extract tag data
     var parsed = json.parseFromSlice(json.Value, allocator, response_body, .{}) catch |err| {
-        std.debug.print("SourceHut: Failed to parse references JSON response: {}\n", .{err});
+        const stderr = std.io.getStdErr().writer();
+        stderr.print("SourceHut: Failed to parse references JSON response: {}\n", .{err}) catch {};
         return all_tag_data;
     };
     defer parsed.deinit();
@@ -270,13 +276,14 @@ fn getAllReferencesMultiRepo(allocator: Allocator, client: *http.Client, token: 
 
     // Check for GraphQL errors first
     if (root.object.get("errors")) |errors| {
-        std.debug.print("GraphQL errors in references query: ", .{});
+        const stderr = std.io.getStdErr().writer();
+        stderr.print("GraphQL errors in references query: ", .{}) catch {};
         for (errors.array.items) |error_item| {
             if (error_item.object.get("message")) |message| {
-                std.debug.print("{s} ", .{message.string});
+                stderr.print("{s} ", .{message.string}) catch {};
             }
         }
-        std.debug.print("\n", .{});
+        stderr.print("\n", .{}) catch {};
         return all_tag_data;
     }
 
@@ -441,7 +448,8 @@ fn getAllCommitDatesMultiRepo(allocator: Allocator, client: *http.Client, token:
 
     // Parse the response
     var parsed = json.parseFromSlice(json.Value, allocator, response_body, .{}) catch |err| {
-        std.debug.print("SourceHut: Failed to parse commit dates JSON response: {}\n", .{err});
+        const stderr = std.io.getStdErr().writer();
+        stderr.print("SourceHut: Failed to parse commit dates JSON response: {}\n", .{err}) catch {};
         // Return empty dates for all tags
         for (tag_data) |_| {
             try commit_dates.append("");
@@ -454,13 +462,14 @@ fn getAllCommitDatesMultiRepo(allocator: Allocator, client: *http.Client, token:
 
     // Check for GraphQL errors first
     if (root.object.get("errors")) |errors| {
-        std.debug.print("GraphQL errors in commit dates query: ", .{});
+        const stderr = std.io.getStdErr().writer();
+        stderr.print("GraphQL errors in commit dates query: ", .{}) catch {};
         for (errors.array.items) |error_item| {
             if (error_item.object.get("message")) |message| {
-                std.debug.print("{s} ", .{message.string});
+                stderr.print("{s} ", .{message.string}) catch {};
             }
         }
-        std.debug.print("\n", .{});
+        stderr.print("\n", .{}) catch {};
         // Return empty dates for all tags
         for (tag_data) |_| {
             try commit_dates.append("");
@@ -550,7 +559,8 @@ fn makeGraphQLRequest(allocator: Allocator, client: *http.Client, token: []const
     try req.wait();
 
     if (req.response.status != .ok) {
-        std.debug.print("SourceHut GraphQL API request failed with status: {}\n", .{req.response.status});
+        const stderr = std.io.getStdErr().writer();
+        stderr.print("SourceHut GraphQL API request failed with status: {}\n", .{req.response.status}) catch {};
         return error.HttpRequestFailed;
     }
 

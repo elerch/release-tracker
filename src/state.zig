@@ -41,7 +41,8 @@ pub const AppState = struct {
 pub fn loadState(allocator: Allocator, path: []const u8) !AppState {
     const file = std.fs.cwd().openFile(path, .{}) catch |err| switch (err) {
         error.FileNotFound => {
-            std.debug.print("State file not found, creating default state at {s}\n", .{path});
+            const stderr = std.io.getStdErr().writer();
+            stderr.print("State file not found, creating default state at {s}\n", .{path}) catch {};
             const default_state = AppState.init(allocator);
             try saveState(default_state, path);
             return default_state;

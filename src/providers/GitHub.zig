@@ -38,7 +38,8 @@ pub fn fetchReleases(self: *Self, allocator: Allocator) !ArrayList(Release) {
     // Then get releases for each repo
     for (starred_repos.items) |repo| {
         const repo_releases = getRepoReleases(allocator, &client, self.token, repo) catch |err| {
-            std.debug.print("Error fetching releases for {s}: {}\n", .{ repo, err });
+            const stderr = std.io.getStdErr().writer();
+            stderr.print("Error fetching releases for {s}: {}\n", .{ repo, err }) catch {};
             continue;
         };
         defer repo_releases.deinit();

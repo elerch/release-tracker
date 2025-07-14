@@ -38,7 +38,8 @@ pub fn fetchReleases(self: *Self, allocator: Allocator) !ArrayList(Release) {
     // Get releases for each project
     for (starred_projects.items) |project_id| {
         const project_releases = getProjectReleases(allocator, &client, self.token, project_id) catch |err| {
-            std.debug.print("Error fetching GitLab releases for project {s}: {}\n", .{ project_id, err });
+            const stderr = std.io.getStdErr().writer();
+            stderr.print("Error fetching GitLab releases for project {s}: {}\n", .{ project_id, err }) catch {};
             continue;
         };
         defer project_releases.deinit();

@@ -36,7 +36,8 @@ pub fn parseAtomFeed(allocator: Allocator, xml_content: []const u8) !ArrayList(R
                 if (parseEntry(allocator, entry_content)) |release| {
                     try releases.append(release);
                 } else |err| {
-                    std.debug.print("Warning: Failed to parse entry: {}\n", .{err});
+                    const stderr = std.io.getStdErr().writer();
+                    stderr.print("Warning: Failed to parse entry: {}\n", .{err}) catch {};
                 }
 
                 pos = entry_end + 8; // Move past "</entry>"

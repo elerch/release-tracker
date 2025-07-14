@@ -38,7 +38,8 @@ pub fn fetchReleases(self: *Self, allocator: Allocator) !ArrayList(Release) {
     // Get releases for each repo
     for (starred_repos.items) |repo| {
         const repo_releases = getRepoReleases(allocator, &client, self.token, repo) catch |err| {
-            std.debug.print("Error fetching Codeberg releases for {s}: {}\n", .{ repo, err });
+            const stderr = std.io.getStdErr().writer();
+            stderr.print("Error fetching Codeberg releases for {s}: {}\n", .{ repo, err }) catch {};
             continue;
         };
         defer repo_releases.deinit();
@@ -95,13 +96,16 @@ fn getStarredRepos(allocator: Allocator, client: *http.Client, token: []const u8
 
         if (req.response.status != .ok) {
             if (req.response.status == .unauthorized) {
-                std.debug.print("Codeberg API: Unauthorized - check your token and scopes\n", .{});
+                const stderr = std.io.getStdErr().writer();
+                stderr.print("Codeberg API: Unauthorized - check your token and scopes\n", .{}) catch {};
                 return error.Unauthorized;
             } else if (req.response.status == .forbidden) {
-                std.debug.print("Codeberg API: Forbidden - token may lack required scopes (read:repository)\n", .{});
+                const stderr = std.io.getStdErr().writer();
+                stderr.print("Codeberg API: Forbidden - token may lack required scopes (read:repository)\n", .{}) catch {};
                 return error.Forbidden;
             }
-            std.debug.print("Codeberg API request failed with status: {}\n", .{req.response.status});
+            const stderr = std.io.getStdErr().writer();
+            stderr.print("Codeberg API request failed with status: {}\n", .{req.response.status}) catch {};
             return error.HttpRequestFailed;
         }
 
@@ -109,7 +113,8 @@ fn getStarredRepos(allocator: Allocator, client: *http.Client, token: []const u8
         defer allocator.free(body);
 
         const parsed = json.parseFromSlice(json.Value, allocator, body, .{}) catch |err| {
-            std.debug.print("Error parsing Codeberg starred repos JSON (page {d}): {}\n", .{ page, err });
+            const stderr = std.io.getStdErr().writer();
+            stderr.print("Error parsing Codeberg starred repos JSON (page {d}): {}\n", .{ page, err }) catch {};
             return error.JsonParseError;
         };
         defer parsed.deinit();
@@ -178,16 +183,20 @@ fn getRepoReleases(allocator: Allocator, client: *http.Client, token: []const u8
 
     if (req.response.status != .ok) {
         if (req.response.status == .unauthorized) {
-            std.debug.print("Codeberg API: Unauthorized for repo {s} - check your token and scopes\n", .{repo});
+            const stderr = std.io.getStdErr().writer();
+            stderr.print("Codeberg API: Unauthorized for repo {s} - check your token and scopes\n", .{repo}) catch {};
             return error.Unauthorized;
         } else if (req.response.status == .forbidden) {
-            std.debug.print("Codeberg API: Forbidden for repo {s} - token may lack required scopes\n", .{repo});
+            const stderr = std.io.getStdErr().writer();
+            stderr.print("Codeberg API: Forbidden for repo {s} - token may lack required scopes\n", .{repo}) catch {};
             return error.Forbidden;
         } else if (req.response.status == .not_found) {
-            std.debug.print("Codeberg API: Repository {s} not found or no releases\n", .{repo});
+            const stderr = std.io.getStdErr().writer();
+            stderr.print("Codeberg API: Repository {s} not found or no releases\n", .{repo}) catch {};
             return error.NotFound;
         }
-        std.debug.print("Codeberg API request failed for repo {s} with status: {}\n", .{ repo, req.response.status });
+        const stderr = std.io.getStdErr().writer();
+        stderr.print("Codeberg API request failed for repo {s} with status: {}\n", .{ repo, req.response.status }) catch {};
         return error.HttpRequestFailed;
     }
 
@@ -195,7 +204,8 @@ fn getRepoReleases(allocator: Allocator, client: *http.Client, token: []const u8
     defer allocator.free(body);
 
     const parsed = json.parseFromSlice(json.Value, allocator, body, .{}) catch |err| {
-        std.debug.print("Error parsing Codeberg releases JSON for {s}: {}\n", .{ repo, err });
+        const stderr = std.io.getStdErr().writer();
+        stderr.print("Error parsing Codeberg releases JSON for {s}: {}\n", .{ repo, err }) catch {};
         return error.JsonParseError;
     };
     defer parsed.deinit();
