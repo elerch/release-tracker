@@ -178,6 +178,12 @@ const TagData = struct {
     commit_id: []const u8,
 };
 
+const TagInfo = struct {
+    tag_name: []const u8,
+    commit_id: []const u8,
+    index: usize,
+};
+
 fn parseRepoFormat(allocator: Allocator, repo: []const u8) !ParsedRepo {
     // Parse repo format: "~username/reponame" or "username/reponame"
     const repo_clean = if (std.mem.startsWith(u8, repo, "~")) repo[1..] else repo;
@@ -335,6 +341,7 @@ fn getAllReferencesMultiRepo(allocator: Allocator, client: *http.Client, token: 
 }
 
 fn getAllCommitDatesMultiRepo(allocator: Allocator, client: *http.Client, token: []const u8, repos: []const ParsedRepo, tag_data: []const TagData) !ArrayList([]const u8) {
+    _ = repos; // unused in this implementation
     var commit_dates = ArrayList([]const u8).init(allocator);
     errdefer {
         for (commit_dates.items) |date| {
@@ -347,145 +354,89 @@ fn getAllCommitDatesMultiRepo(allocator: Allocator, client: *http.Client, token:
         return commit_dates;
     }
 
-    // Group commit hashes by repository using simple arrays
-    const RepoCommits = struct {
-        repo_idx: u32,
-        commits: ArrayList([]const u8),
+    // Since SourceHut's objects() query automatically resolves tag objects to their target commits,
+    // we need to use a different approach. Let's use the revparse_single query for each tag individually
+    // but batch them by repository to minimize queries.
+
+    // Group tags by repository
+    const RepoTags = struct {
+        username: []const u8,
+        reponame: []const u8,
+        tags: ArrayList(TagInfo),
     };
 
-    var repo_commits_list = ArrayList(RepoCommits).init(allocator);
+    var repo_tags_map = ArrayList(RepoTags).init(allocator);
     defer {
-        for (repo_commits_list.items) |*item| {
-            item.commits.deinit();
+        for (repo_tags_map.items) |*item| {
+            item.tags.deinit();
         }
-        repo_commits_list.deinit();
+        repo_tags_map.deinit();
     }
 
-    // Build mapping of tag_data to repository indices
-    for (tag_data, 0..) |tag, tag_idx| {
-        // Find which repository this tag belongs to
-        for (repos, 0..) |repo, repo_idx| {
-            if (std.mem.eql(u8, tag.username, repo.username) and std.mem.eql(u8, tag.reponame, repo.reponame)) {
-                // Find or create entry for this repo
-                var found = false;
-                for (repo_commits_list.items) |*item| {
-                    if (item.repo_idx == repo_idx) {
-                        try item.commits.append(tag.commit_id);
-                        found = true;
-                        break;
-                    }
-                }
-                if (!found) {
-                    var new_commits = ArrayList([]const u8).init(allocator);
-                    try new_commits.append(tag.commit_id);
-                    try repo_commits_list.append(RepoCommits{
-                        .repo_idx = @intCast(repo_idx),
-                        .commits = new_commits,
-                    });
-                }
+    for (tag_data, 0..) |tag, i| {
+        // Find or create repo entry
+        var found = false;
+        for (repo_tags_map.items) |*repo_tags| {
+            if (std.mem.eql(u8, repo_tags.username, tag.username) and std.mem.eql(u8, repo_tags.reponame, tag.reponame)) {
+                try repo_tags.tags.append(TagInfo{ .tag_name = tag.tag_name, .commit_id = tag.commit_id, .index = i });
+                found = true;
                 break;
             }
         }
-        _ = tag_idx;
+        if (!found) {
+            var new_tags = ArrayList(TagInfo).init(allocator);
+            try new_tags.append(TagInfo{ .tag_name = tag.tag_name, .commit_id = tag.commit_id, .index = i });
+            try repo_tags_map.append(RepoTags{
+                .username = tag.username,
+                .reponame = tag.reponame,
+                .tags = new_tags,
+            });
+        }
     }
 
-    // Build GraphQL query with variables for commit hashes grouped by repository
+    // Initialize result array with empty strings
+    for (tag_data) |_| {
+        try commit_dates.append("");
+    }
+
+    // Build a single GraphQL query with all repositories and all their commits using aliases
     var query_builder = ArrayList(u8).init(allocator);
     defer query_builder.deinit();
 
-    var variables_builder = ArrayList(u8).init(allocator);
-    defer variables_builder.deinit();
+    try query_builder.appendSlice("query {\n");
 
-    try query_builder.appendSlice("query(");
-    try variables_builder.appendSlice("{");
+    // Build the query with aliases for each repository
+    for (repo_tags_map.items, 0..) |repo_tags, repo_idx| {
+        try query_builder.writer().print("  repo{d}: user(username: \"{s}\") {{\n", .{ repo_idx, repo_tags.username });
+        try query_builder.writer().print("    repository(name: \"{s}\") {{\n", .{repo_tags.reponame});
 
-    // Build query variables and structure
-    var first_var = true;
-    for (repo_commits_list.items) |item| {
-        if (item.commits.items.len == 0) continue;
-
-        const var_name = try std.fmt.allocPrint(allocator, "repo{d}Hashes", .{item.repo_idx});
-        defer allocator.free(var_name);
-
-        if (!first_var) {
-            try query_builder.appendSlice(", ");
-            try variables_builder.appendSlice(", ");
+        for (repo_tags.tags.items, 0..) |tag_info, tag_idx| {
+            try query_builder.writer().print("      tag{d}_{d}: revparse_single(revspec: \"{s}\") {{\n", .{ repo_idx, tag_idx, tag_info.commit_id });
+            try query_builder.appendSlice("        ... on Commit {\n");
+            try query_builder.appendSlice("          committer { time }\n");
+            try query_builder.appendSlice("        }\n");
+            try query_builder.appendSlice("      }\n");
         }
-        first_var = false;
 
-        try query_builder.writer().print("${s}: [String!]!", .{var_name});
-
-        // Build JSON array of commit hashes
-        try variables_builder.writer().print("\"{s}\": [", .{var_name});
-        for (item.commits.items, 0..) |commit, i| {
-            if (i > 0) try variables_builder.appendSlice(", ");
-            try variables_builder.writer().print("\"{s}\"", .{commit});
-        }
-        try variables_builder.appendSlice("]");
+        try query_builder.appendSlice("    }\n");
+        try query_builder.appendSlice("  }\n");
     }
 
-    try query_builder.appendSlice(") {");
-    try variables_builder.appendSlice("}");
+    try query_builder.appendSlice("}");
 
-    // Build query body
-    for (repo_commits_list.items) |item| {
-        if (item.commits.items.len == 0) continue;
+    // Create JSON request body
+    var json_obj = std.json.ObjectMap.init(allocator);
+    defer json_obj.deinit();
 
-        const repo = repos[item.repo_idx];
-        const alias = try std.fmt.allocPrint(allocator, "repo{d}", .{item.repo_idx});
-        defer allocator.free(alias);
-        const var_name = try std.fmt.allocPrint(allocator, "repo{d}Hashes", .{item.repo_idx});
-        defer allocator.free(var_name);
+    try json_obj.put("query", std.json.Value{ .string = query_builder.items });
 
-        const repo_query = try std.fmt.allocPrint(allocator,
-            \\
-            \\  {s}: user(username: "{s}") {{
-            \\    repository(name: "{s}") {{
-            \\      objects(ids: ${s}) {{
-            \\        id
-            \\        ... on Commit {{
-            \\          committer {{
-            \\            time
-            \\          }}
-            \\        }}
-            \\      }}
-            \\    }}
-            \\  }}
-        , .{ alias, repo.username, repo.reponame, var_name });
-        defer allocator.free(repo_query);
+    var json_string = ArrayList(u8).init(allocator);
+    defer json_string.deinit();
 
-        try query_builder.appendSlice(repo_query);
-    }
+    try std.json.stringify(std.json.Value{ .object = json_obj }, .{}, json_string.writer());
 
-    try query_builder.appendSlice("\n}");
-
-    // Properly escape the query string for JSON
-    var escaped_query = ArrayList(u8).init(allocator);
-    defer escaped_query.deinit();
-
-    for (query_builder.items) |char| {
-        switch (char) {
-            '"' => try escaped_query.appendSlice("\\\""),
-            '\\' => try escaped_query.appendSlice("\\\\"),
-            '\n' => try escaped_query.appendSlice("\\n"),
-            '\r' => try escaped_query.appendSlice("\\r"),
-            '\t' => try escaped_query.appendSlice("\\t"),
-            else => try escaped_query.append(char),
-        }
-    }
-
-    // Build the complete JSON request body manually
-    var request_body = ArrayList(u8).init(allocator);
-    defer request_body.deinit();
-
-    try request_body.appendSlice("{\"query\":\"");
-    try request_body.appendSlice(escaped_query.items);
-    try request_body.appendSlice("\",\"variables\":");
-    try request_body.appendSlice(variables_builder.items);
-    try request_body.appendSlice("}");
-
-    // Make the GraphQL request
-    const response_body = try makeGraphQLRequest(allocator, client, token, request_body.items);
+    // Make the single GraphQL request for all repositories and commits
+    const response_body = try makeGraphQLRequest(allocator, client, token, json_string.items);
     defer allocator.free(response_body);
 
     // Parse the response
@@ -525,56 +476,51 @@ fn getAllCommitDatesMultiRepo(allocator: Allocator, client: *http.Client, token:
         return commit_dates;
     };
 
-    // Build a simple list of commit_id -> date pairs for quick lookup
-    const CommitDate = struct {
-        commit_id: []const u8,
-        date: []const u8,
-    };
-    var commit_date_list = ArrayList(CommitDate).init(allocator);
-    defer commit_date_list.deinit();
+    // Extract dates for each tag using the aliases
+    for (repo_tags_map.items, 0..) |repo_tags, repo_idx| {
+        const repo_alias = try std.fmt.allocPrint(allocator, "repo{d}", .{repo_idx});
+        defer allocator.free(repo_alias);
 
-    for (repo_commits_list.items) |item| {
-        const alias = try std.fmt.allocPrint(allocator, "repo{d}", .{item.repo_idx});
-        defer allocator.free(alias);
-
-        const repo_data = data.object.get(alias) orelse continue;
+        const repo_data = data.object.get(repo_alias) orelse continue;
         if (repo_data == .null) continue;
         const repository = repo_data.object.get("repository") orelse continue;
         if (repository == .null) continue;
-        const objects = repository.object.get("objects") orelse continue;
 
-        for (objects.array.items) |obj| {
-            const id = obj.object.get("id") orelse continue;
-            const committer = obj.object.get("committer") orelse continue;
-            const time = committer.object.get("time") orelse continue;
+        for (repo_tags.tags.items, 0..) |tag_info, tag_idx| {
+            const tag_alias = try std.fmt.allocPrint(allocator, "tag{d}_{d}", .{ repo_idx, tag_idx });
+            defer allocator.free(tag_alias);
 
-            if (id == .string and time == .string) {
-                try commit_date_list.append(CommitDate{
-                    .commit_id = id.string,
-                    .date = time.string,
-                });
+            const tag_obj = repository.object.get(tag_alias);
+            if (tag_obj) |obj| {
+                if (obj == .null) continue;
+
+                if (obj.object.get("committer")) |committer| {
+                    if (committer.object.get("time")) |time| {
+                        if (time == .string) {
+                            // Free the empty string we allocated earlier
+                            if (commit_dates.items[tag_info.index].len > 0) {
+                                allocator.free(commit_dates.items[tag_info.index]);
+                            }
+                            commit_dates.items[tag_info.index] = try allocator.dupe(u8, time.string);
+                        }
+                    }
+                }
             }
-        }
-    }
-
-    // Now build the result array in the same order as tag_data
-    for (tag_data) |tag| {
-        var found_date: []const u8 = "";
-        for (commit_date_list.items) |item| {
-            if (std.mem.eql(u8, item.commit_id, tag.commit_id)) {
-                found_date = item.date;
-                break;
-            }
-        }
-
-        if (found_date.len > 0) {
-            try commit_dates.append(try allocator.dupe(u8, found_date));
-        } else {
-            try commit_dates.append("");
         }
     }
 
     return commit_dates;
+}
+
+fn getSingleCommitDate(allocator: Allocator, client: *http.Client, token: []const u8, username: []const u8, reponame: []const u8, commit_id: []const u8) ![]const u8 {
+    _ = allocator;
+    _ = client;
+    _ = token;
+    _ = username;
+    _ = reponame;
+    _ = commit_id;
+    // This function is no longer used but kept for compatibility
+    return "";
 }
 
 fn makeGraphQLRequest(allocator: Allocator, client: *http.Client, token: []const u8, request_body: []const u8) ![]const u8 {
