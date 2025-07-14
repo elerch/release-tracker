@@ -62,6 +62,7 @@ const ProviderResult = struct {
     provider_name: []const u8,
     releases: ArrayList(Release),
     error_msg: ?[]const u8 = null,
+    duration_ms: u64 = 0,
 };
 
 const ThreadContext = struct {
@@ -167,7 +168,7 @@ pub fn main() !u8 {
     var has_errors = false;
     for (provider_results) |result| {
         if (result.error_msg) |error_msg| {
-            printError("✗ {s}: {s}\n", .{ result.provider_name, error_msg });
+            printError("✗ {s}: {s} (in {d}ms)\n", .{ result.provider_name, error_msg, result.duration_ms });
             has_errors = true;
         }
     }
@@ -181,7 +182,6 @@ pub fn main() !u8 {
     // Combine all new releases from threaded providers
     for (provider_results) |result| {
         try new_releases.appendSlice(result.releases.items);
-        printInfo("Found {} new releases from {s}\n", .{ result.releases.items.len, result.provider_name });
     }
 
     // Combine all releases (existing and new)
@@ -399,6 +399,9 @@ fn fetchProviderReleases(context: *const ThreadContext) void {
     defer if (!std.mem.eql(u8, since_str, "unknown")) allocator.free(since_str);
     printInfo("Fetching releases from {s} (since: {s})...\n", .{ provider.getName(), since_str });
 
+    // Start timing
+    const start_time = std.time.milliTimestamp();
+
     if (provider.fetchReleases(allocator)) |all_releases| {
         defer {
             for (all_releases.items) |release| {
@@ -414,9 +417,19 @@ fn fetchProviderReleases(context: *const ThreadContext) void {
             return;
         };
 
+        // Calculate duration
+        const end_time = std.time.milliTimestamp();
+        const duration_ms: u64 = @intCast(end_time - start_time);
+        result.duration_ms = duration_ms;
+
         result.releases = filtered;
-        printInfo("✓ {s}: Found {} new releases\n", .{ provider.getName(), filtered.items.len });
+        printInfo("✓ {s}: Found {} new releases in {d}ms\n", .{ provider.getName(), filtered.items.len, duration_ms });
     } else |err| {
+        // Calculate duration even for errors
+        const end_time = std.time.milliTimestamp();
+        const duration_ms: u64 = @intCast(end_time - start_time);
+        result.duration_ms = duration_ms;
+
         const error_msg = std.fmt.allocPrint(allocator, "Error fetching releases: {}", .{err}) catch "Unknown fetch error";
         result.error_msg = error_msg;
         // Don't print error here - it will be handled in main function
