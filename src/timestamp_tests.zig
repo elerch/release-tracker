@@ -4,8 +4,6 @@ const config = @import("config.zig");
 const xml_parser = @import("xml_parser.zig");
 
 const Release = main.Release;
-const Config = config.Config;
-const SourceHutConfig = config.SourceHutConfig;
 
 test "Config loading without last_check field" {
     const allocator = std.testing.allocator;

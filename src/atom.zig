@@ -37,7 +37,7 @@ pub fn generateFeed(allocator: Allocator, releases: []const Release) ![]u8 {
     );
 
     // Add current timestamp in proper ISO 8601 format using zeit
-    const now = zeit.instant(.{}) catch zeit.instant(.{ .source = .now }) catch unreachable;
+    const now = zeit.instant(.{}) catch zeit.instant(.{ .source = .now }) catch @panic("Failed to get current time");
     const time = now.time();
     var buf: [64]u8 = undefined;
     const updated_str = try time.bufPrint(&buf, .rfc3339);

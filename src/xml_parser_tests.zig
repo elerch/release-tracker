@@ -1,6 +1,5 @@
 const std = @import("std");
 const testing = std.testing;
-const ArrayList = std.ArrayList;
 
 const xml_parser = @import("xml_parser.zig");
 const atom = @import("atom.zig");

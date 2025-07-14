@@ -10,8 +10,6 @@ const Codeberg = @import("providers/Codeberg.zig");
 const SourceHut = @import("providers/SourceHut.zig");
 const atom = @import("atom.zig");
 const config = @import("config.zig");
-const Config = config.Config;
-const SourceHutConfig = config.SourceHutConfig;
 const xml_parser = @import("xml_parser.zig");
 const zeit = @import("zeit");
 

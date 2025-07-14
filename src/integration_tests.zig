@@ -1,6 +1,5 @@
 const std = @import("std");
 const testing = std.testing;
-const ArrayList = std.ArrayList;
 const build_options = @import("build_options");
 
 const atom = @import("atom.zig");
