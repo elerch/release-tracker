@@ -27,6 +27,24 @@ fn print(comptime fmt: []const u8, args: anytype) void {
 }
 
 // Error output functions that work in release mode
+/// Check if file size exceeds 10MB threshold and warn user if so.
+/// Returns true if warning was triggered, false otherwise.
+/// Only prints to stderr in production (not during tests).
+fn checkFileSizeAndWarn(file_size: usize) bool {
+    const ten_mb = 10 * 1024 * 1024; // 10MB in bytes
+    if (file_size > ten_mb) {
+        // Only print warning if not in test mode
+        if (!builtin.is_test) {
+            const size_mb = @as(f64, @floatFromInt(file_size)) / (1024.0 * 1024.0);
+            printError("⚠️  WARNING: Feed file is {d:.1} MB, which exceeds 10MB\n", .{size_mb});
+            printError("   Large feeds may cause issues with some feed readers\n", .{});
+            printError("   Consider reducing the RELEASE_AGE_LIMIT_SECONDS to show fewer releases\n", .{});
+        }
+        return true; // File size exceeded threshold
+    }
+    return false; // File size is within acceptable limits
+}
+
 fn printError(comptime fmt: []const u8, args: anytype) void {
     const stderr = std.io.getStdErr().writer();
     stderr.print(fmt, args) catch {};
@@ -37,8 +55,6 @@ fn printInfo(comptime fmt: []const u8, args: anytype) void {
     if (!builtin.is_test)
         stderr.print(fmt, args) catch {};
 }
-
-// TODO: Output a warning if xml is more than 10MB
 
 // Configuration: Only include releases from the last 6 months
 const RELEASE_AGE_LIMIT_SECONDS: i64 = 365 * 24 * 60 * 60 / 2; // 6 months in seconds
@@ -226,6 +242,9 @@ pub fn main() !u8 {
     const file = try std.fs.cwd().createFile(output_file, .{});
     defer file.close();
     try file.writeAll(atom_content);
+
+    // Check file size and warn if over 10MB
+    _ = checkFileSizeAndWarn(atom_content.len);
 
     // Log to stderr for user feedback
     printInfo("Found {} new releases\n", .{new_releases.items.len});
@@ -448,7 +467,31 @@ test "main functionality" {
     try std.testing.expect(releases.items.len == 0);
 }
 
-test "Atom feed has correct structure" {
+test "file size warning for large feeds" {
+    // Test that files under 10MB don't trigger warning
+    const result1 = checkFileSizeAndWarn(5 * 1024 * 1024); // 5MB - should not warn
+    try std.testing.expect(result1 == false);
+
+    // Test that files over 10MB do trigger warning
+    const result2 = checkFileSizeAndWarn(15 * 1024 * 1024); // 15MB - should warn
+    try std.testing.expect(result2 == true);
+
+    // Test edge case - exactly 10MB should not warn
+    const result3 = checkFileSizeAndWarn(10 * 1024 * 1024); // 10MB exactly - should not warn
+    try std.testing.expect(result3 == false);
+
+    // Test just over 10MB should warn
+    const result4 = checkFileSizeAndWarn(10 * 1024 * 1024 + 1); // 10MB + 1 byte - should warn
+    try std.testing.expect(result4 == true);
+
+    // Test various sizes around the threshold
+    try std.testing.expect(!checkFileSizeAndWarn(9 * 1024 * 1024)); // 9MB
+    try std.testing.expect(checkFileSizeAndWarn(11 * 1024 * 1024)); // 11MB
+    try std.testing.expect(!checkFileSizeAndWarn(1 * 1024 * 1024)); // 1MB
+    try std.testing.expect(checkFileSizeAndWarn(50 * 1024 * 1024)); // 50MB
+}
+
+test "atom feed generation" {
     const allocator = std.testing.allocator;
 
     const releases = [_]Release{
