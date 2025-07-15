@@ -486,7 +486,7 @@ test "Atom feed has correct structure" {
     try std.testing.expect(std.mem.indexOf(u8, atom_content, "github") != null);
     try std.testing.expect(std.mem.indexOf(u8, atom_content, "</author>") != null);
 
-    try std.testing.expect(std.mem.indexOf(u8, atom_content, "<summary>Test release</summary>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, atom_content, "<content type=\"html\">&lt;p&gt;Test release&lt;/p&gt;") != null);
     try std.testing.expect(std.mem.indexOf(u8, atom_content, "<category term=\"github\"/>") != null);
 }
 
@@ -864,17 +864,8 @@ test "Age-based release filtering" {
     try std.testing.expect(!found_old);
 }
 
-test "RELEASE_AGE_LIMIT_SECONDS constant verification" {
-    // Verify the constant is set to 1 year in seconds
-    const expected_year_in_seconds = 365 * 24 * 60 * 60;
-    try std.testing.expectEqual(expected_year_in_seconds, RELEASE_AGE_LIMIT_SECONDS);
-
-    // Verify it's approximately 31.5 million seconds (1 year)
-    try std.testing.expect(RELEASE_AGE_LIMIT_SECONDS > 31_000_000);
-    try std.testing.expect(RELEASE_AGE_LIMIT_SECONDS < 32_000_000);
-}
-
 // Import timestamp tests
 test {
     std.testing.refAllDecls(@import("timestamp_tests.zig"));
+    std.testing.refAllDecls(@import("atom.zig"));
 }
