@@ -52,14 +52,9 @@ pub fn fetchReleases(self: *Self, allocator: Allocator) !ArrayList(Release) {
         return releases;
     }
 
-    // Only show progress in non-test environments
-    const is_test = @import("builtin").is_test;
-    if (!is_test) {
-        const stderr = std.io.getStdErr().writer();
-        const starred_duration: u64 = @intCast(starred_end_time - starred_start_time);
-        stderr.print("GitHub: Found {} starred repositories in {}ms\n", .{ starred_repos.items.len, starred_duration }) catch {};
-        stderr.print("GitHub: Processing {} starred repositories with thread pool...\n", .{starred_repos.items.len}) catch {};
-    }
+    const starred_duration: u64 = @intCast(starred_end_time - starred_start_time);
+    std.log.debug("GitHub: Found {} starred repositories in {}ms\n", .{ starred_repos.items.len, starred_duration });
+    std.log.debug("GitHub: Processing {} starred repositories with thread pool...\n", .{starred_repos.items.len});
 
     const thread_start_time = std.time.milliTimestamp();
 
@@ -105,6 +100,7 @@ pub fn fetchReleases(self: *Self, allocator: Allocator) !ArrayList(Release) {
         } else {
             failed_repos += 1;
             if (task.error_msg) |err_msg| {
+                const is_test = @import("builtin").is_test;
                 if (!is_test) {
                     const stderr = std.io.getStdErr().writer();
                     stderr.print("Error fetching releases for {s}: {s}\n", .{ task.repo, err_msg }) catch {};
@@ -114,14 +110,11 @@ pub fn fetchReleases(self: *Self, allocator: Allocator) !ArrayList(Release) {
         }
     }
 
-    if (!is_test) {
-        const total_end_time = std.time.milliTimestamp();
-        const thread_duration: u64 = @intCast(thread_end_time - thread_start_time);
-        const total_duration: u64 = @intCast(total_end_time - total_start_time);
-        const stderr = std.io.getStdErr().writer();
-        stderr.print("GitHub: Thread pool completed in {}ms using {} threads ({} successful, {} failed)\n", .{ thread_duration, thread_count, successful_repos, failed_repos }) catch {};
-        stderr.print("GitHub: Total time (including pagination): {}ms\n", .{total_duration}) catch {};
-    }
+    const total_end_time = std.time.milliTimestamp();
+    const thread_duration: u64 = @intCast(thread_end_time - thread_start_time);
+    const total_duration: u64 = @intCast(total_end_time - total_start_time);
+    std.log.debug("GitHub: Thread pool completed in {}ms using {} threads ({} successful, {} failed)\n", .{ thread_duration, thread_count, successful_repos, failed_repos });
+    std.log.debug("GitHub: Total time (including pagination): {}ms\n", .{total_duration});
 
     return releases;
 }
@@ -353,10 +346,6 @@ fn getStarredRepos(allocator: Allocator, client: *http.Client, token: []const u8
         }
     }
 
-    if (!is_test) {
-        const stderr = std.io.getStdErr().writer();
-        stderr.print("GitHub: Found {} total starred repositories\n", .{repos.items.len}) catch {};
-    }
     return repos;
 }
 
