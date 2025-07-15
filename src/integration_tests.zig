@@ -43,13 +43,317 @@ test "Atom feed validates against W3C validator" {
     const atom_content = try atom.generateFeed(allocator, &releases);
     defer allocator.free(atom_content);
 
-    // Skip W3C validation in CI/automated environments to avoid network dependency
-    // Just validate basic XML structure instead
-    try testing.expect(std.mem.indexOf(u8, atom_content, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>") != null);
-    try testing.expect(std.mem.indexOf(u8, atom_content, "<feed xmlns=\"http://www.w3.org/2005/Atom\">") != null);
-    try testing.expect(std.mem.indexOf(u8, atom_content, "</feed>") != null);
+    // Validate against W3C Feed Validator
+    const http = std.http;
+    var client = http.Client{ .allocator = allocator };
+    defer client.deinit();
 
-    testPrint("Atom feed structure validation passed\n", .{});
+    // Prepare the POST request to W3C validator
+    const validator_url = "https://validator.w3.org/feed/check.cgi";
+    const uri = try std.Uri.parse(validator_url);
+
+    // Create form data for the validator
+    var form_data = std.ArrayList(u8).init(allocator);
+    defer form_data.deinit();
+
+    try form_data.appendSlice("------WebKitFormBoundary7MA4YWxkTrZu0gW\r\n");
+    try form_data.appendSlice("Content-Disposition: form-data; name=\"rawdata\"\r\n\r\n");
+    try form_data.appendSlice(atom_content);
+    try form_data.appendSlice("\r\n------WebKitFormBoundary7MA4YWxkTrZu0gW\r\n");
+    try form_data.appendSlice("Content-Disposition: form-data; name=\"manual\"\r\n\r\n");
+    try form_data.appendSlice("1\r\n");
+    try form_data.appendSlice("------WebKitFormBoundary7MA4YWxkTrZu0gW--\r\n");
+
+    var server_header_buffer: [16 * 1024]u8 = undefined;
+    var req = try client.open(.POST, uri, .{
+        .server_header_buffer = &server_header_buffer,
+        .extra_headers = &.{
+            .{ .name = "Content-Type", .value = "multipart/form-data; boundary=----WebKitFormBoundary7MA4YWxkTrZu0gW" },
+            .{ .name = "User-Agent", .value = "Release-Tracker-Test/1.0" },
+        },
+    });
+    defer req.deinit();
+
+    req.transfer_encoding = .{ .content_length = form_data.items.len };
+    try req.send();
+    try req.writeAll(form_data.items);
+    try req.finish();
+    try req.wait();
+
+    // Read the response
+    var response_body = std.ArrayList(u8).init(allocator);
+    defer response_body.deinit();
+
+    const max_response_size = 1024 * 1024; // 1MB max
+    try response_body.ensureTotalCapacity(max_response_size);
+
+    var buf: [4096]u8 = undefined;
+    while (true) {
+        const bytes_read = try req.readAll(buf[0..]);
+        if (bytes_read == 0) break;
+        try response_body.appendSlice(buf[0..bytes_read]);
+        if (response_body.items.len > max_response_size) {
+            return error.ResponseTooLarge;
+        }
+    }
+
+    const response_text = response_body.items;
+    testPrint("W3C Validator Response Length: {d}\n", .{response_text.len});
+
+    // Check for validation success indicators
+    const is_valid = std.mem.indexOf(u8, response_text, "This is a valid Atom 1.0 feed") != null or
+        std.mem.indexOf(u8, response_text, "Congratulations!") != null or
+        (std.mem.indexOf(u8, response_text, "valid") != null and
+            std.mem.indexOf(u8, response_text, "error") == null);
+
+    // Check for specific error indicators
+    const has_errors = std.mem.indexOf(u8, response_text, "This feed does not validate") != null or
+        std.mem.indexOf(u8, response_text, "Errors:") != null or
+        std.mem.indexOf(u8, response_text, "line") != null and std.mem.indexOf(u8, response_text, "column") != null;
+
+    if (has_errors) {
+        testPrint("W3C Validator found errors in the feed:\n", .{});
+        // Print relevant parts of the response for debugging
+        if (std.mem.indexOf(u8, response_text, "<pre>")) |start| {
+            if (std.mem.indexOf(u8, response_text[start..], "</pre>")) |end| {
+                const error_section = response_text[start .. start + end + 6];
+                testPrint("{s}\n", .{error_section});
+            }
+        }
+        return error.FeedValidationFailed;
+    }
+
+    if (!is_valid) {
+        // Handle 502/520 errors gracefully - W3C validator is sometimes unavailable
+        if (std.mem.indexOf(u8, response_text, "error code: 502") != null or
+            std.mem.indexOf(u8, response_text, "error code: 520") != null)
+        {
+            testPrint("⚠️  W3C Validator temporarily unavailable (server error) - skipping validation\n", .{});
+            return; // Skip test instead of failing
+        }
+        testPrint("W3C Validator response unclear - dumping first 1000 chars:\n{s}\n", .{response_text[0..@min(1000, response_text.len)]});
+        return error.ValidationResponseUnclear;
+    }
+
+    testPrint("✓ Atom feed validated successfully against W3C Feed Validator\n", .{});
+}
+
+test "Validate actual releases.xml against W3C validator" {
+    const allocator = testing.allocator;
+
+    // Read the actual releases.xml file
+    const releases_xml = std.fs.cwd().readFileAlloc(allocator, "releases.xml", 10 * 1024 * 1024) catch |err| {
+        if (err == error.FileNotFound) {
+            testPrint("⚠️  releases.xml not found - skipping validation (run the app first)\n", .{});
+            return;
+        }
+        return err;
+    };
+    defer allocator.free(releases_xml);
+
+    testPrint("Validating actual releases.xml ({d} bytes) against W3C validator...\n", .{releases_xml.len});
+
+    // Validate against W3C Feed Validator
+    const http = std.http;
+    var client = http.Client{ .allocator = allocator };
+    defer client.deinit();
+
+    const validator_url = "https://validator.w3.org/feed/check.cgi";
+    const uri = try std.Uri.parse(validator_url);
+
+    // Create form data for the validator
+    var form_data = std.ArrayList(u8).init(allocator);
+    defer form_data.deinit();
+
+    try form_data.appendSlice("------WebKitFormBoundary7MA4YWxkTrZu0gW\r\n");
+    try form_data.appendSlice("Content-Disposition: form-data; name=\"rawdata\"\r\n\r\n");
+    try form_data.appendSlice(releases_xml);
+    try form_data.appendSlice("\r\n------WebKitFormBoundary7MA4YWxkTrZu0gW\r\n");
+    try form_data.appendSlice("Content-Disposition: form-data; name=\"manual\"\r\n\r\n");
+    try form_data.appendSlice("1\r\n");
+    try form_data.appendSlice("------WebKitFormBoundary7MA4YWxkTrZu0gW--\r\n");
+
+    var server_header_buffer: [16 * 1024]u8 = undefined;
+    var req = try client.open(.POST, uri, .{
+        .server_header_buffer = &server_header_buffer,
+        .extra_headers = &.{
+            .{ .name = "Content-Type", .value = "multipart/form-data; boundary=----WebKitFormBoundary7MA4YWxkTrZu0gW" },
+            .{ .name = "User-Agent", .value = "Release-Tracker-Test/1.0" },
+        },
+    });
+    defer req.deinit();
+
+    req.transfer_encoding = .{ .content_length = form_data.items.len };
+    try req.send();
+    try req.writeAll(form_data.items);
+    try req.finish();
+    try req.wait();
+
+    // Read the response
+    var response_body = std.ArrayList(u8).init(allocator);
+    defer response_body.deinit();
+
+    const max_response_size = 1024 * 1024; // 1MB max
+    try response_body.ensureTotalCapacity(max_response_size);
+
+    var buf: [4096]u8 = undefined;
+    while (true) {
+        const bytes_read = try req.readAll(buf[0..]);
+        if (bytes_read == 0) break;
+        try response_body.appendSlice(buf[0..bytes_read]);
+        if (response_body.items.len > max_response_size) {
+            return error.ResponseTooLarge;
+        }
+    }
+
+    const response_text = response_body.items;
+    testPrint("W3C Validator Response Length: {d}\n", .{response_text.len});
+
+    // Check for validation success indicators
+    const is_valid = std.mem.indexOf(u8, response_text, "This is a valid Atom 1.0 feed") != null or
+        std.mem.indexOf(u8, response_text, "Congratulations!") != null or
+        (std.mem.indexOf(u8, response_text, "valid") != null and
+            std.mem.indexOf(u8, response_text, "error") == null);
+
+    // Check for specific error indicators
+    const has_errors = std.mem.indexOf(u8, response_text, "This feed does not validate") != null or
+        std.mem.indexOf(u8, response_text, "Errors:") != null or
+        std.mem.indexOf(u8, response_text, "line") != null and std.mem.indexOf(u8, response_text, "column") != null;
+
+    if (has_errors) {
+        testPrint("❌ W3C Validator found errors in releases.xml:\n", .{});
+        // Print relevant parts of the response for debugging
+        if (std.mem.indexOf(u8, response_text, "<pre>")) |start| {
+            if (std.mem.indexOf(u8, response_text[start..], "</pre>")) |end| {
+                const error_section = response_text[start .. start + end + 6];
+                testPrint("{s}\n", .{error_section});
+            }
+        }
+        // Also dump more of the response for debugging
+        testPrint("Full response (first 2000 chars):\n{s}\n", .{response_text[0..@min(2000, response_text.len)]});
+        return error.FeedValidationFailed;
+    }
+
+    if (!is_valid) {
+        // Handle 502/520 errors gracefully - W3C validator is sometimes unavailable
+        if (std.mem.indexOf(u8, response_text, "error code: 502") != null or
+            std.mem.indexOf(u8, response_text, "error code: 520") != null)
+        {
+            testPrint("⚠️  W3C Validator temporarily unavailable (server error) - skipping validation\n", .{});
+            return; // Skip test instead of failing
+        }
+        testPrint("W3C Validator response unclear - dumping first 2000 chars:\n{s}\n", .{response_text[0..@min(2000, response_text.len)]});
+        return error.ValidationResponseUnclear;
+    }
+
+    testPrint("✅ releases.xml validated successfully against W3C Feed Validator!\n", .{});
+}
+
+test "Local XML well-formedness validation" {
+    const allocator = testing.allocator;
+
+    // Read the actual releases.xml file
+    const releases_xml = std.fs.cwd().readFileAlloc(allocator, "releases.xml", 10 * 1024 * 1024) catch |err| {
+        if (err == error.FileNotFound) {
+            testPrint("⚠️  releases.xml not found - skipping validation (run the app first)\n", .{});
+            return;
+        }
+        return err;
+    };
+    defer allocator.free(releases_xml);
+
+    testPrint("Validating XML well-formedness of releases.xml ({d} bytes)...\n", .{releases_xml.len});
+
+    // Basic XML well-formedness checks
+    var validation_errors = std.ArrayList([]const u8).init(allocator);
+    defer validation_errors.deinit();
+
+    // Check for XML declaration
+    if (!std.mem.startsWith(u8, releases_xml, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>")) {
+        try validation_errors.append("Missing or incorrect XML declaration");
+    }
+
+    // Check for root element
+    if (std.mem.indexOf(u8, releases_xml, "<feed xmlns=\"http://www.w3.org/2005/Atom\">") == null) {
+        try validation_errors.append("Missing Atom feed root element");
+    }
+
+    // Check for closing feed tag
+    if (!std.mem.endsWith(u8, std.mem.trim(u8, releases_xml, " \t\n\r"), "</feed>")) {
+        try validation_errors.append("Missing closing </feed> tag");
+    }
+
+    // Check for required Atom elements
+    const required_elements = [_][]const u8{
+        "<title>",
+        "<subtitle>",
+        "<id>",
+        "<updated>",
+    };
+
+    for (required_elements) |element| {
+        if (std.mem.indexOf(u8, releases_xml, element) == null) {
+            const error_msg = try std.fmt.allocPrint(allocator, "Missing required element: {s}", .{element});
+            try validation_errors.append(error_msg);
+        }
+    }
+
+    // Check for balanced tags (basic check)
+    const entry_open_count = std.mem.count(u8, releases_xml, "<entry>");
+    const entry_close_count = std.mem.count(u8, releases_xml, "</entry>");
+    if (entry_open_count != entry_close_count) {
+        const error_msg = try std.fmt.allocPrint(allocator, "Unbalanced <entry> tags: {d} open, {d} close", .{ entry_open_count, entry_close_count });
+        try validation_errors.append(error_msg);
+    }
+
+    // Check for proper HTML escaping in content
+    if (std.mem.indexOf(u8, releases_xml, "<content type=\"html\">") != null) {
+        // Look for unescaped HTML in content sections
+        var content_start: usize = 0;
+        while (std.mem.indexOfPos(u8, releases_xml, content_start, "<content type=\"html\">")) |start| {
+            const content_tag_end = start + "<content type=\"html\">".len;
+            if (std.mem.indexOfPos(u8, releases_xml, content_tag_end, "</content>")) |end| {
+                const content_section = releases_xml[content_tag_end..end];
+
+                // Check for unescaped < and > (should be &lt; and &gt;)
+                if (std.mem.indexOf(u8, content_section, "<") != null and
+                    std.mem.indexOf(u8, content_section, "&lt;") == null)
+                {
+                    // Allow some exceptions like <br/> which might be intentional
+                    if (std.mem.indexOf(u8, content_section, "<script") != null or
+                        std.mem.indexOf(u8, content_section, "<div") != null or
+                        std.mem.indexOf(u8, content_section, "<span") != null)
+                    {
+                        try validation_errors.append("Found unescaped HTML tags in content (should be XML-escaped)");
+                        break;
+                    }
+                }
+                content_start = end + "</content>".len;
+            } else {
+                break;
+            }
+        }
+    }
+
+    // Report validation results
+    if (validation_errors.items.len > 0) {
+        testPrint("❌ XML validation failed with {d} errors:\n", .{validation_errors.items.len});
+        for (validation_errors.items) |error_msg| {
+            testPrint("  - {s}\n", .{error_msg});
+            // Free allocated error messages
+            if (std.mem.indexOf(u8, error_msg, "Missing required element:") != null or
+                std.mem.indexOf(u8, error_msg, "Unbalanced") != null)
+            {
+                allocator.free(error_msg);
+            }
+        }
+        return error.XmlValidationFailed;
+    }
+
+    testPrint("✅ XML well-formedness validation passed!\n", .{});
+    testPrint("   - Found {d} entries\n", .{entry_open_count});
+    testPrint("   - All required Atom elements present\n", .{});
+    testPrint("   - Proper XML structure maintained\n", .{});
 }
 test "GitHub provider integration" {
     const allocator = testing.allocator;
