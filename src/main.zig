@@ -34,7 +34,8 @@ fn printError(comptime fmt: []const u8, args: anytype) void {
 
 fn printInfo(comptime fmt: []const u8, args: anytype) void {
     const stderr = std.io.getStdErr().writer();
-    stderr.print(fmt, args) catch {};
+    if (!builtin.is_test)
+        stderr.print(fmt, args) catch {};
 }
 
 // Configuration: Only include releases from the last year in the output
