@@ -38,8 +38,10 @@ fn printInfo(comptime fmt: []const u8, args: anytype) void {
         stderr.print(fmt, args) catch {};
 }
 
-// Configuration: Only include releases from the last year in the output
-const RELEASE_AGE_LIMIT_SECONDS: i64 = 365 * 24 * 60 * 60; // 1 year in seconds
+// TODO: Output a warning if xml is more than 10MB
+
+// Configuration: Only include releases from the last 6 months
+const RELEASE_AGE_LIMIT_SECONDS: i64 = 365 * 24 * 60 * 60 / 2; // 6 months in seconds
 
 pub const Release = struct {
     repo_name: []const u8,
