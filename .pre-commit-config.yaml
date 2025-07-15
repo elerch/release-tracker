@@ -15,7 +15,7 @@ repos:
       - id: zig-build
   - repo: local
     hooks:
-      - id: zlint
+      - id: test
         name: Run zig build test
         entry: zig
         args: ["build", "--verbose", "test"]

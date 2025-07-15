@@ -86,8 +86,11 @@ fn parseEntry(allocator: Allocator, entry_xml: []const u8) !Release {
         release.published_at = updated;
     }
 
-    // Parse summary (description)
-    if (extractTagContent(entry_xml, "summary", allocator)) |summary| {
+    // Parse content (description) - try content first, then fall back to summary
+    if (extractTagContent(entry_xml, "content", allocator)) |content| {
+        allocator.free(release.description);
+        release.description = content;
+    } else if (extractTagContent(entry_xml, "summary", allocator)) |summary| {
         allocator.free(release.description);
         release.description = summary;
     }
@@ -115,6 +118,23 @@ fn extractTagContent(xml: []const u8, tag_name: []const u8, allocator: Allocator
             return unescapeXml(allocator, content) catch null;
         }
     }
+
+    // Also try with attributes (e.g., <content type="html">)
+    const open_tag_with_attrs = std.fmt.allocPrint(allocator, "<{s} ", .{tag_name}) catch return null;
+    defer allocator.free(open_tag_with_attrs);
+
+    if (std.mem.indexOf(u8, xml, open_tag_with_attrs)) |start_pos| {
+        // Find the end of the opening tag
+        if (std.mem.indexOf(u8, xml[start_pos..], ">")) |tag_end_offset| {
+            const content_start = start_pos + tag_end_offset + 1;
+            if (std.mem.indexOf(u8, xml[content_start..], close_tag)) |end_offset| {
+                const content_end = content_start + end_offset;
+                const content = xml[content_start..content_end];
+                return unescapeXml(allocator, content) catch null;
+            }
+        }
+    }
+
     return null;
 }
 

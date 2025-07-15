@@ -48,14 +48,14 @@ test "round trip: generate atom feed and parse it back" {
     try testing.expectEqualStrings("v1.0.0", parsed_releases.items[0].tag_name);
     try testing.expectEqualStrings("2024-01-01T00:00:00Z", parsed_releases.items[0].published_at);
     try testing.expectEqualStrings("https://github.com/test/repo1/releases/tag/v1.0.0", parsed_releases.items[0].html_url);
-    try testing.expectEqualStrings("First release", parsed_releases.items[0].description);
+    try testing.expectEqualStrings("<p>First release</p>\n", parsed_releases.items[0].description);
     try testing.expectEqualStrings("github", parsed_releases.items[0].provider);
 
     try testing.expectEqualStrings("test/repo2", parsed_releases.items[1].repo_name);
     try testing.expectEqualStrings("v2.0.0", parsed_releases.items[1].tag_name);
     try testing.expectEqualStrings("2024-01-02T00:00:00Z", parsed_releases.items[1].published_at);
     try testing.expectEqualStrings("https://github.com/test/repo2/releases/tag/v2.0.0", parsed_releases.items[1].html_url);
-    try testing.expectEqualStrings("Second release", parsed_releases.items[1].description);
+    try testing.expectEqualStrings("<p>Second release</p>\n", parsed_releases.items[1].description);
     try testing.expectEqualStrings("github", parsed_releases.items[1].provider);
 }
 
@@ -78,10 +78,11 @@ test "parse atom feed with special characters" {
     const atom_content = try atom.generateFeed(allocator, &original_releases);
     defer allocator.free(atom_content);
 
-    // Verify the XML contains escaped characters
+    // Verify the XML contains escaped characters in the title (not in content)
     try testing.expect(std.mem.indexOf(u8, atom_content, "&lt;script&gt;") != null);
     try testing.expect(std.mem.indexOf(u8, atom_content, "&amp; more") != null);
-    try testing.expect(std.mem.indexOf(u8, atom_content, "&quot;release&quot;") != null);
+    // The content will be XML-escaped HTML, so quotes in HTML will be &amp;quot;
+    try testing.expect(std.mem.indexOf(u8, atom_content, "&amp;quot;release&amp;quot;") != null);
 
     // Parse it back (this should unescape the characters)
     var parsed_releases = try xml_parser.parseAtomFeed(allocator, atom_content);
@@ -96,7 +97,7 @@ test "parse atom feed with special characters" {
     try testing.expectEqual(@as(usize, 1), parsed_releases.items.len);
     try testing.expectEqualStrings("test/repo<script>", parsed_releases.items[0].repo_name);
     try testing.expectEqualStrings("v1.0.0 & more", parsed_releases.items[0].tag_name);
-    try testing.expectEqualStrings("Test \"release\" with <special> chars & symbols", parsed_releases.items[0].description);
+    try testing.expectEqualStrings("<pre>Test &quot;release&quot; with &lt;special&gt; chars &amp; symbols</pre>\n", parsed_releases.items[0].description);
 }
 
 test "parse malformed atom feed gracefully" {
