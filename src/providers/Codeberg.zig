@@ -3,7 +3,7 @@ const http = std.http;
 const json = std.json;
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
-const zeit = @import("zeit");
+const utils = @import("../utils.zig");
 
 const Release = @import("../main.zig").Release;
 const Provider = @import("../Provider.zig");
@@ -235,7 +235,7 @@ fn getRepoReleases(allocator: Allocator, client: *http.Client, token: []const u8
         const release = Release{
             .repo_name = try allocator.dupe(u8, repo),
             .tag_name = try allocator.dupe(u8, tag_name_value.string),
-            .published_at = try allocator.dupe(u8, published_at_value.string),
+            .published_at = try utils.parseReleaseTimestamp(published_at_value.string),
             .html_url = try allocator.dupe(u8, html_url_value.string),
             .description = try allocator.dupe(u8, body_str),
             .provider = try allocator.dupe(u8, "codeberg"),
@@ -249,29 +249,9 @@ fn getRepoReleases(allocator: Allocator, client: *http.Client, token: []const u8
     }
 
     // Sort releases by date (most recent first)
-    std.mem.sort(Release, releases.items, {}, compareReleasesByDate);
+    std.mem.sort(Release, releases.items, {}, utils.compareReleasesByDate);
 
     return releases;
-}
-
-fn compareReleasesByDate(context: void, a: Release, b: Release) bool {
-    _ = context;
-    const timestamp_a = parseTimestamp(a.published_at) catch 0;
-    const timestamp_b = parseTimestamp(b.published_at) catch 0;
-    return timestamp_a > timestamp_b; // Most recent first
-}
-
-fn parseTimestamp(date_str: []const u8) !i64 {
-    // Try parsing as direct timestamp first
-    if (std.fmt.parseInt(i64, date_str, 10)) |timestamp| {
-        return timestamp;
-    } else |_| {
-        // Try parsing as ISO 8601 format using Zeit
-        const instant = zeit.instant(.{
-            .source = .{ .iso8601 = date_str },
-        }) catch return 0;
-        return @intCast(instant.timestamp);
-    }
 }
 
 test "codeberg provider name" {
@@ -343,7 +323,7 @@ test "codeberg release parsing with live data snapshot" {
     }
 
     // Sort releases by date (most recent first)
-    std.mem.sort(Release, releases.items, {}, compareReleasesByDate);
+    std.mem.sort(Release, releases.items, {}, utils.compareReleasesByDate);
 
     // Verify parsing and sorting
     try std.testing.expectEqual(@as(usize, 3), releases.items.len);

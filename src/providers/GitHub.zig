@@ -4,7 +4,7 @@ const json = std.json;
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const Thread = std.Thread;
-const zeit = @import("zeit");
+const utils = @import("../utils.zig");
 
 const Release = @import("../main.zig").Release;
 const Provider = @import("../Provider.zig");
@@ -53,8 +53,8 @@ pub fn fetchReleases(self: *Self, allocator: Allocator) !ArrayList(Release) {
     }
 
     const starred_duration: u64 = @intCast(starred_end_time - starred_start_time);
-    std.log.debug("GitHub: Found {} starred repositories in {}ms\n", .{ starred_repos.items.len, starred_duration });
-    std.log.debug("GitHub: Processing {} starred repositories with thread pool...\n", .{starred_repos.items.len});
+    std.log.debug("GitHub: Found {} starred repositories in {}ms", .{ starred_repos.items.len, starred_duration });
+    std.log.debug("GitHub: Processing {} starred repositories with thread pool...", .{starred_repos.items.len});
 
     const thread_start_time = std.time.milliTimestamp();
 
@@ -115,6 +115,9 @@ pub fn fetchReleases(self: *Self, allocator: Allocator) !ArrayList(Release) {
     const total_duration: u64 = @intCast(total_end_time - total_start_time);
     std.log.debug("GitHub: Thread pool completed in {}ms using {} threads ({} successful, {} failed)\n", .{ thread_duration, thread_count, successful_repos, failed_repos });
     std.log.debug("GitHub: Total time (including pagination): {}ms\n", .{total_duration});
+
+    // Sort releases by date (most recent first)
+    std.mem.sort(Release, releases.items, {}, compareReleasesByDate);
 
     return releases;
 }
@@ -394,7 +397,7 @@ fn getRepoReleases(allocator: Allocator, client: *http.Client, token: []const u8
         const release = Release{
             .repo_name = try allocator.dupe(u8, repo),
             .tag_name = try allocator.dupe(u8, obj.get("tag_name").?.string),
-            .published_at = try allocator.dupe(u8, obj.get("published_at").?.string),
+            .published_at = try utils.parseReleaseTimestamp(obj.get("published_at").?.string),
             .html_url = try allocator.dupe(u8, obj.get("html_url").?.string),
             .description = try allocator.dupe(u8, body_str),
             .provider = try allocator.dupe(u8, "github"),
@@ -403,30 +406,12 @@ fn getRepoReleases(allocator: Allocator, client: *http.Client, token: []const u8
         try releases.append(release);
     }
 
-    // Sort releases by date (most recent first)
-    std.mem.sort(Release, releases.items, {}, compareReleasesByDate);
-
     return releases;
 }
 
 fn compareReleasesByDate(context: void, a: Release, b: Release) bool {
     _ = context;
-    const timestamp_a = parseTimestamp(a.published_at) catch 0;
-    const timestamp_b = parseTimestamp(b.published_at) catch 0;
-    return timestamp_a > timestamp_b; // Most recent first
-}
-
-fn parseTimestamp(date_str: []const u8) !i64 {
-    // Try parsing as direct timestamp first
-    if (std.fmt.parseInt(i64, date_str, 10)) |timestamp| {
-        return timestamp;
-    } else |_| {
-        // Try parsing as ISO 8601 format using Zeit
-        const instant = zeit.instant(.{
-            .source = .{ .iso8601 = date_str },
-        }) catch return 0;
-        return @intCast(instant.timestamp);
-    }
+    return a.published_at > b.published_at;
 }
 
 test "github provider" {
@@ -497,7 +482,7 @@ test "github release parsing with live data snapshot" {
         const release = Release{
             .repo_name = try allocator.dupe(u8, "example/repo"),
             .tag_name = try allocator.dupe(u8, obj.get("tag_name").?.string),
-            .published_at = try allocator.dupe(u8, obj.get("published_at").?.string),
+            .published_at = try utils.parseReleaseTimestamp(obj.get("published_at").?.string),
             .html_url = try allocator.dupe(u8, obj.get("html_url").?.string),
             .description = try allocator.dupe(u8, body_str),
             .provider = try allocator.dupe(u8, "github"),
@@ -514,6 +499,6 @@ test "github release parsing with live data snapshot" {
     try std.testing.expectEqualStrings("v1.2.0", releases.items[0].tag_name);
     try std.testing.expectEqualStrings("v1.1.0", releases.items[1].tag_name);
     try std.testing.expectEqualStrings("v1.0.0", releases.items[2].tag_name);
-    try std.testing.expectEqualStrings("2024-01-15T10:30:00Z", releases.items[0].published_at);
+    try std.testing.expectEqual(try @import("zeit").instant(.{ .source = .{ .iso8601 = "2024-01-15T10:30:00Z" } }), releases.items[0].published_at);
     try std.testing.expectEqualStrings("github", releases.items[0].provider);
 }

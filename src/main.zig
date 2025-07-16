@@ -10,8 +10,8 @@ const Codeberg = @import("providers/Codeberg.zig");
 const SourceHut = @import("providers/SourceHut.zig");
 const atom = @import("atom.zig");
 const config = @import("config.zig");
-const xml_parser = @import("xml_parser.zig");
 const zeit = @import("zeit");
+const utils = @import("utils.zig");
 
 const Provider = @import("Provider.zig");
 
@@ -56,13 +56,13 @@ fn printInfo(comptime fmt: []const u8, args: anytype) void {
         stderr.print(fmt, args) catch {};
 }
 
-// Configuration: Only include releases from the last 6 months
-const RELEASE_AGE_LIMIT_SECONDS: i64 = 365 * 24 * 60 * 60 / 2; // 6 months in seconds
+// Configuration: Only include releases from the last 365 days
+const RELEASE_AGE_LIMIT_SECONDS: i64 = 365 * std.time.s_per_day; // Get from last 365 days
 
 pub const Release = struct {
     repo_name: []const u8,
     tag_name: []const u8,
-    published_at: []const u8,
+    published_at: i64,
     html_url: []const u8,
     description: []const u8,
     provider: []const u8,
@@ -70,7 +70,6 @@ pub const Release = struct {
     pub fn deinit(self: Release, allocator: Allocator) void {
         allocator.free(self.repo_name);
         allocator.free(self.tag_name);
-        allocator.free(self.published_at);
         allocator.free(self.html_url);
         allocator.free(self.description);
         allocator.free(self.provider);
@@ -86,7 +85,6 @@ const ProviderResult = struct {
 
 const ThreadContext = struct {
     provider: Provider,
-    latest_release_date: i64,
     result: *ProviderResult,
     allocator: Allocator,
 };
@@ -123,22 +121,8 @@ pub fn main() !u8 {
     };
     defer app_config.deinit();
 
-    // Load existing releases to determine last check time per provider
-    var existing_releases = loadExistingReleases(allocator, output_file) catch ArrayList(Release).init(allocator);
-    defer {
-        for (existing_releases.items) |release| {
-            release.deinit(allocator);
-        }
-        existing_releases.deinit();
-    }
-
-    var new_releases = ArrayList(Release).init(allocator);
-    defer {
-        for (new_releases.items) |release| {
-            release.deinit(allocator);
-        }
-        new_releases.deinit();
-    }
+    var all_releases = ArrayList(Release).init(allocator);
+    defer all_releases.deinit();
 
     printInfo("Fetching releases from all providers concurrently...\n", .{});
 
@@ -170,20 +154,22 @@ pub fn main() !u8 {
     };
 
     // Fetch releases from all providers concurrently using thread pool
-    const provider_results = try fetchReleasesFromAllProviders(allocator, providers.items, existing_releases.items);
+    const provider_results = try fetchReleasesFromAllProviders(allocator, providers.items);
     defer {
         for (provider_results) |*result| {
-            // Don't free the releases here - they're transferred to new_releases
-            result.releases.deinit();
             // Free error messages if they exist
-            if (result.error_msg) |error_msg| {
+            if (result.error_msg) |error_msg|
                 allocator.free(error_msg);
-            }
+            for (result.releases.items) |release|
+                release.deinit(allocator);
+            result.releases.deinit();
         }
         allocator.free(provider_results);
     }
 
-    // Check for provider errors and report them
+    const now = std.time.timestamp();
+    const cutoff_time = now - RELEASE_AGE_LIMIT_SECONDS;
+
     var has_errors = false;
     for (provider_results) |result| {
         if (result.error_msg) |error_msg| {
@@ -198,41 +184,26 @@ pub fn main() !u8 {
         return 1;
     }
 
-    // Combine all new releases from threaded providers
+    var original_count: usize = 0;
+    // Combine all releases from threaded providers
     for (provider_results) |result| {
-        try new_releases.appendSlice(result.releases.items);
+        original_count += result.releases.items.len;
+        // Results should be sorted already...we will find the oldest applicable release,
+        // then copy into all_releases
+
+        var last_index: usize = 0;
+        for (result.releases.items) |release| {
+            if (release.published_at >= cutoff_time) {
+                last_index += 1;
+            } else break;
+        }
+        // Total releases in feed: 1170 of 3591 total in last 365 days
+        std.log.debug("last_index: {} : {s}", .{ last_index, result.provider_name });
+        try all_releases.appendSlice(result.releases.items[0..last_index]);
     }
-
-    // Combine all releases (existing and new)
-    var all_releases = ArrayList(Release).init(allocator);
-    defer all_releases.deinit();
-
-    // Add new releases
-    try all_releases.appendSlice(new_releases.items);
-
-    // Add all existing releases
-    try all_releases.appendSlice(existing_releases.items);
 
     // Sort all releases by published date (most recent first)
-    std.mem.sort(Release, all_releases.items, {}, compareReleasesByDate);
-
-    // Filter releases by age in-place - zero extra allocations
-    const now = std.time.timestamp();
-    const cutoff_time = now - RELEASE_AGE_LIMIT_SECONDS;
-
-    var write_index: usize = 0;
-    const original_count = all_releases.items.len;
-
-    for (all_releases.items) |release| {
-        const release_time = parseReleaseTimestamp(release.published_at) catch 0;
-        if (release_time >= cutoff_time) {
-            all_releases.items[write_index] = release;
-            write_index += 1;
-        }
-    }
-
-    // Shrink the array to only include filtered items
-    all_releases.shrinkRetainingCapacity(write_index);
+    std.mem.sort(Release, all_releases.items, {}, utils.compareReleasesByDate);
 
     // Generate Atom feed from filtered releases
     const atom_content = try atom.generateFeed(allocator, all_releases.items);
@@ -247,86 +218,10 @@ pub fn main() !u8 {
     _ = checkFileSizeAndWarn(atom_content.len);
 
     // Log to stderr for user feedback
-    printInfo("Found {} new releases\n", .{new_releases.items.len});
-    printInfo("Total releases in feed: {} (filtered from {} total, showing last {} days)\n", .{ all_releases.items.len, original_count, @divTrunc(RELEASE_AGE_LIMIT_SECONDS, 24 * 60 * 60) });
+    printInfo("Total releases in feed: {} of {} total in last {} days\n", .{ all_releases.items.len, original_count, @divTrunc(RELEASE_AGE_LIMIT_SECONDS, std.time.s_per_day) });
     printInfo("Updated feed written to: {s}\n", .{output_file});
 
     return 0;
-}
-
-fn loadExistingReleases(allocator: Allocator, filename: []const u8) !ArrayList(Release) {
-    const file = std.fs.cwd().openFile(filename, .{}) catch |err| switch (err) {
-        error.FileNotFound => {
-            printInfo("No existing releases file found, starting fresh\n", .{});
-            return ArrayList(Release).init(allocator);
-        },
-        else => return err,
-    };
-    defer file.close();
-
-    const content = try file.readToEndAlloc(allocator, 10 * 1024 * 1024);
-    defer allocator.free(content);
-
-    printInfo("Loading existing releases from {s}...\n", .{filename});
-    const releases = try parseReleasesFromXml(allocator, content);
-    printInfo("Loaded {} existing releases\n", .{releases.items.len});
-    return releases;
-}
-
-fn parseReleasesFromXml(allocator: Allocator, xml_content: []const u8) !ArrayList(Release) {
-    const releases = xml_parser.parseAtomFeed(allocator, xml_content) catch |err| {
-        printError("Warning: Failed to parse XML content: {}\n", .{err});
-        printInfo("Starting fresh with no existing releases\n", .{});
-        return ArrayList(Release).init(allocator);
-    };
-
-    return releases;
-}
-
-pub fn filterNewReleases(allocator: Allocator, all_releases: []const Release, since_timestamp: i64) !ArrayList(Release) {
-    var new_releases = ArrayList(Release).init(allocator);
-
-    for (all_releases) |release| {
-        // Parse the published_at timestamp
-        const release_time = parseReleaseTimestamp(release.published_at) catch continue;
-
-        if (release_time > since_timestamp) {
-            // This is a new release, duplicate it for our list
-            const new_release = Release{
-                .repo_name = try allocator.dupe(u8, release.repo_name),
-                .tag_name = try allocator.dupe(u8, release.tag_name),
-                .published_at = try allocator.dupe(u8, release.published_at),
-                .html_url = try allocator.dupe(u8, release.html_url),
-                .description = try allocator.dupe(u8, release.description),
-                .provider = try allocator.dupe(u8, release.provider),
-            };
-            try new_releases.append(new_release);
-        }
-    }
-
-    return new_releases;
-}
-
-pub fn parseReleaseTimestamp(date_str: []const u8) !i64 {
-    // Try parsing as direct timestamp first
-    if (std.fmt.parseInt(i64, date_str, 10)) |timestamp| {
-        return timestamp;
-    } else |_| {
-        // Try parsing as ISO 8601 format using Zeit
-        const instant = zeit.instant(.{
-            .source = .{ .iso8601 = date_str },
-        }) catch return 0;
-        // Zeit returns nanoseconds, convert to seconds
-        const seconds = @divTrunc(instant.timestamp, 1_000_000_000);
-        return @intCast(seconds);
-    }
-}
-
-pub fn compareReleasesByDate(context: void, a: Release, b: Release) bool {
-    _ = context;
-    const timestamp_a = parseReleaseTimestamp(a.published_at) catch 0;
-    const timestamp_b = parseReleaseTimestamp(b.published_at) catch 0;
-    return timestamp_a > timestamp_b; // Most recent first
 }
 
 fn formatTimestampForDisplay(allocator: Allocator, timestamp: i64) ![]const u8 {
@@ -359,7 +254,6 @@ fn formatTimestampForDisplay(allocator: Allocator, timestamp: i64) ![]const u8 {
 fn fetchReleasesFromAllProviders(
     allocator: Allocator,
     providers: []const Provider,
-    existing_releases: []const Release,
 ) ![]ProviderResult {
     var results = try allocator.alloc(ProviderResult, providers.len);
 
@@ -382,20 +276,8 @@ fn fetchReleasesFromAllProviders(
 
     // Calculate the latest release date for each provider from existing releases
     for (providers, 0..) |provider, i| {
-        // Find the latest release date for this provider
-        var latest_date: i64 = 0;
-        for (existing_releases) |release| {
-            if (std.mem.eql(u8, release.provider, provider.getName())) {
-                const release_time = parseReleaseTimestamp(release.published_at) catch 0;
-                if (release_time > latest_date) {
-                    latest_date = release_time;
-                }
-            }
-        }
-
         contexts[i] = ThreadContext{
             .provider = provider,
-            .latest_release_date = latest_date,
             .result = &results[i],
             .allocator = allocator,
         };
@@ -413,45 +295,23 @@ fn fetchReleasesFromAllProviders(
 
 fn fetchProviderReleases(context: *const ThreadContext) void {
     const provider = context.provider;
-    const latest_release_date = context.latest_release_date;
     const result = context.result;
     const allocator = context.allocator;
 
-    const since_str = formatTimestampForDisplay(allocator, latest_release_date) catch "unknown";
-    defer if (!std.mem.eql(u8, since_str, "unknown")) allocator.free(since_str);
-    printInfo("Fetching releases from {s} (since: {s})...\n", .{ provider.getName(), since_str });
+    printInfo("Fetching releases from {s}...\n", .{provider.getName()});
 
     // Start timing
     const start_time = std.time.milliTimestamp();
 
-    if (provider.fetchReleases(allocator)) |all_releases| {
-        defer {
-            for (all_releases.items) |release| {
-                release.deinit(allocator);
-            }
-            all_releases.deinit();
-        }
+    const releases_or_err = provider.fetchReleases(allocator);
+    const end_time = std.time.milliTimestamp();
+    const duration_ms: u64 = @intCast(end_time - start_time);
+    result.duration_ms = duration_ms;
 
-        // Filter releases newer than latest known release
-        const filtered = filterNewReleases(allocator, all_releases.items, latest_release_date) catch |err| {
-            const error_msg = std.fmt.allocPrint(allocator, "Error filtering releases: {}", .{err}) catch "Unknown filter error";
-            result.error_msg = error_msg;
-            return;
-        };
-
-        // Calculate duration
-        const end_time = std.time.milliTimestamp();
-        const duration_ms: u64 = @intCast(end_time - start_time);
-        result.duration_ms = duration_ms;
-
-        result.releases = filtered;
-        printInfo("✓ {s}: Found {} new releases in {d}ms\n", .{ provider.getName(), filtered.items.len, duration_ms });
+    if (releases_or_err) |all_releases| {
+        result.releases = all_releases;
+        printInfo("✓ {s}: Found {} releases in {d}ms\n", .{ provider.getName(), result.releases.items.len, duration_ms });
     } else |err| {
-        // Calculate duration even for errors
-        const end_time = std.time.milliTimestamp();
-        const duration_ms: u64 = @intCast(end_time - start_time);
-        result.duration_ms = duration_ms;
-
         const error_msg = std.fmt.allocPrint(allocator, "Error fetching releases: {}", .{err}) catch "Unknown fetch error";
         result.error_msg = error_msg;
         // Don't print error here - it will be handled in main function
@@ -498,7 +358,10 @@ test "atom feed generation" {
         Release{
             .repo_name = "test/repo",
             .tag_name = "v1.0.0",
-            .published_at = "2024-01-01T00:00:00Z",
+            .published_at = @intCast(@divTrunc(
+                (try zeit.instant(.{ .source = .{ .iso8601 = "2024-01-01T00:00:00Z" } })).timestamp,
+                std.time.ns_per_s,
+            )),
             .html_url = "https://github.com/test/repo/releases/tag/v1.0.0",
             .description = "Test release",
             .provider = "github",
@@ -535,207 +398,6 @@ test "atom feed generation" {
     try std.testing.expect(std.mem.indexOf(u8, atom_content, "<category term=\"github\"/>") != null);
 }
 
-test "loadExistingReleases with valid XML" {
-    const allocator = std.testing.allocator;
-
-    // Test XML content
-    const test_xml =
-        \\<?xml version="1.0" encoding="UTF-8"?>
-        \\<feed xmlns="http://www.w3.org/2005/Atom">
-        \\<title>Repository Releases</title>
-        \\<entry>
-        \\  <title>test/repo - v1.0.0</title>
-        \\  <link href="https://github.com/test/repo/releases/tag/v1.0.0"/>
-        \\  <updated>2024-01-01T00:00:00Z</updated>
-        \\  <summary>Test release</summary>
-        \\  <category term="github"/>
-        \\</entry>
-        \\</feed>
-    ;
-
-    // Parse releases directly from XML content
-    var releases = try parseReleasesFromXml(allocator, test_xml);
-    defer {
-        for (releases.items) |release| {
-            release.deinit(allocator);
-        }
-        releases.deinit();
-    }
-
-    try std.testing.expectEqual(@as(usize, 1), releases.items.len);
-    try std.testing.expectEqualStrings("test/repo", releases.items[0].repo_name);
-    try std.testing.expectEqualStrings("v1.0.0", releases.items[0].tag_name);
-}
-
-test "loadExistingReleases with nonexistent file" {
-    const allocator = std.testing.allocator;
-
-    var releases = try loadExistingReleases(allocator, "nonexistent_file.xml");
-    defer releases.deinit();
-
-    try std.testing.expectEqual(@as(usize, 0), releases.items.len);
-}
-
-test "loadExistingReleases with malformed XML" {
-    const allocator = std.testing.allocator;
-
-    const malformed_xml = "This is not valid XML at all!";
-
-    // Should handle gracefully and return empty list
-    var releases = try parseReleasesFromXml(allocator, malformed_xml);
-    defer releases.deinit();
-
-    try std.testing.expectEqual(@as(usize, 0), releases.items.len);
-}
-
-test "parseReleaseTimestamp with various formats" {
-    // Test ISO 8601 format
-    const timestamp1 = try parseReleaseTimestamp("2024-01-01T00:00:00Z");
-    try std.testing.expect(timestamp1 > 0);
-
-    // Test direct timestamp
-    const timestamp2 = try parseReleaseTimestamp("1704067200");
-    try std.testing.expectEqual(@as(i64, 1704067200), timestamp2);
-
-    // Test invalid format (should return 0)
-    const timestamp3 = parseReleaseTimestamp("invalid") catch 0;
-    try std.testing.expectEqual(@as(i64, 0), timestamp3);
-
-    // Test empty string
-    const timestamp4 = parseReleaseTimestamp("") catch 0;
-    try std.testing.expectEqual(@as(i64, 0), timestamp4);
-
-    // Test different ISO formats
-    const timestamp5 = try parseReleaseTimestamp("2024-12-25T15:30:45Z");
-    try std.testing.expect(timestamp5 > timestamp1);
-}
-
-test "filterNewReleases correctly filters by timestamp" {
-    const allocator = std.testing.allocator;
-
-    const old_release = Release{
-        .repo_name = "test/old",
-        .tag_name = "v1.0.0",
-        .published_at = "2024-01-01T00:00:00Z",
-        .html_url = "https://github.com/test/old/releases/tag/v1.0.0",
-        .description = "Old release",
-        .provider = "github",
-    };
-
-    const new_release = Release{
-        .repo_name = "test/new",
-        .tag_name = "v2.0.0",
-        .published_at = "2024-06-01T00:00:00Z",
-        .html_url = "https://github.com/test/new/releases/tag/v2.0.0",
-        .description = "New release",
-        .provider = "github",
-    };
-
-    const all_releases = [_]Release{ old_release, new_release };
-
-    // Filter with timestamp between the two releases
-    const march_timestamp = try parseReleaseTimestamp("2024-03-01T00:00:00Z");
-    var filtered = try filterNewReleases(allocator, &all_releases, march_timestamp);
-    defer {
-        for (filtered.items) |release| {
-            release.deinit(allocator);
-        }
-        filtered.deinit();
-    }
-
-    // Should only contain the new release
-    try std.testing.expectEqual(@as(usize, 1), filtered.items.len);
-    try std.testing.expectEqualStrings("test/new", filtered.items[0].repo_name);
-}
-
-test "loadExistingReleases handles various XML structures" {
-    const allocator = std.testing.allocator;
-
-    // Test with minimal valid XML
-    const minimal_xml =
-        \\<?xml version="1.0" encoding="UTF-8"?>
-        \\<feed xmlns="http://www.w3.org/2005/Atom">
-        \\<title>Repository Releases</title>
-        \\<entry>
-        \\  <title>minimal/repo - v1.0.0</title>
-        \\  <link href="https://github.com/minimal/repo/releases/tag/v1.0.0"/>
-        \\  <updated>2024-01-01T00:00:00Z</updated>
-        \\</entry>
-        \\</feed>
-    ;
-
-    // Parse releases directly from XML content
-    var releases = try parseReleasesFromXml(allocator, minimal_xml);
-    defer {
-        for (releases.items) |release| {
-            release.deinit(allocator);
-        }
-        releases.deinit();
-    }
-
-    try std.testing.expectEqual(@as(usize, 1), releases.items.len);
-    try std.testing.expectEqualStrings("minimal/repo", releases.items[0].repo_name);
-    try std.testing.expectEqualStrings("v1.0.0", releases.items[0].tag_name);
-    try std.testing.expectEqualStrings("2024-01-01T00:00:00Z", releases.items[0].published_at);
-}
-
-test "loadExistingReleases with complex XML content" {
-    const allocator = std.testing.allocator;
-
-    // Test with complex XML including escaped characters and multiple entries
-    const complex_xml =
-        \\<?xml version="1.0" encoding="UTF-8"?>
-        \\<feed xmlns="http://www.w3.org/2005/Atom">
-        \\<title>Repository Releases</title>
-        \\<subtitle>New releases from starred repositories</subtitle>
-        \\<link href="https://github.com" rel="alternate"/>
-        \\<link href="https://example.com/releases.xml" rel="self"/>
-        \\<id>https://example.com/releases</id>
-        \\<updated>2024-01-01T00:00:00Z</updated>
-        \\<entry>
-        \\  <title>complex/repo &amp; more - v1.0.0 &lt;beta&gt;</title>
-        \\  <link href="https://github.com/complex/repo/releases/tag/v1.0.0"/>
-        \\  <id>https://github.com/complex/repo/releases/tag/v1.0.0</id>
-        \\  <updated>2024-01-01T00:00:00Z</updated>
-        \\  <author><n>github</n></author>
-        \\  <summary>Release with &quot;special&quot; characters &amp; symbols</summary>
-        \\  <category term="github"/>
-        \\</entry>
-        \\<entry>
-        \\  <title>another/repo - v2.0.0</title>
-        \\  <link href="https://gitlab.com/another/repo/-/releases/v2.0.0"/>
-        \\  <id>https://gitlab.com/another/repo/-/releases/v2.0.0</id>
-        \\  <updated>2024-01-02T12:30:45Z</updated>
-        \\  <author><n>gitlab</n></author>
-        \\  <summary>Another release</summary>
-        \\  <category term="gitlab"/>
-        \\</entry>
-        \\</feed>
-    ;
-
-    // Parse releases directly from XML content
-    var releases = try parseReleasesFromXml(allocator, complex_xml);
-    defer {
-        for (releases.items) |release| {
-            release.deinit(allocator);
-        }
-        releases.deinit();
-    }
-
-    try std.testing.expectEqual(@as(usize, 2), releases.items.len);
-
-    // Check first release with escaped characters
-    try std.testing.expectEqualStrings("complex/repo & more", releases.items[0].repo_name);
-    try std.testing.expectEqualStrings("v1.0.0 <beta>", releases.items[0].tag_name);
-    try std.testing.expectEqualStrings("Release with \"special\" characters & symbols", releases.items[0].description);
-    try std.testing.expectEqualStrings("github", releases.items[0].provider);
-
-    // Check second release
-    try std.testing.expectEqualStrings("another/repo", releases.items[1].repo_name);
-    try std.testing.expectEqualStrings("v2.0.0", releases.items[1].tag_name);
-    try std.testing.expectEqualStrings("gitlab", releases.items[1].provider);
-}
-
 test "formatTimestampForDisplay produces valid ISO dates" {
     const allocator = std.testing.allocator;
 
@@ -752,87 +414,6 @@ test "formatTimestampForDisplay produces valid ISO dates" {
     try std.testing.expect(std.mem.indexOf(u8, known_result, "T") != null);
 }
 
-test "XML parsing handles malformed entries gracefully" {
-    const allocator = std.testing.allocator;
-
-    // Test with partially malformed XML (missing closing tags, etc.)
-    const malformed_xml =
-        \\<?xml version="1.0" encoding="UTF-8"?>
-        \\<feed xmlns="http://www.w3.org/2005/Atom">
-        \\<title>Repository Releases</title>
-        \\<entry>
-        \\  <title>good/repo - v1.0.0</title>
-        \\  <link href="https://github.com/good/repo/releases/tag/v1.0.0"/>
-        \\  <updated>2024-01-01T00:00:00Z</updated>
-        \\</entry>
-        \\<entry>
-        \\  <title>broken/repo - v2.0.0
-        \\  <link href="https://github.com/broken/repo/releases/tag/v2.0.0"/>
-        \\  <updated>2024-01-02T00:00:00Z</updated>
-        \\</entry>
-        \\<entry>
-        \\  <title>another/good - v3.0.0</title>
-        \\  <link href="https://github.com/another/good/releases/tag/v3.0.0"/>
-        \\  <updated>2024-01-03T00:00:00Z</updated>
-        \\</entry>
-        \\</feed>
-    ;
-
-    var releases = try xml_parser.parseAtomFeed(allocator, malformed_xml);
-    defer {
-        for (releases.items) |release| {
-            release.deinit(allocator);
-        }
-        releases.deinit();
-    }
-
-    // Should parse the good entries and skip/handle the malformed one gracefully
-    try std.testing.expect(releases.items.len >= 2);
-
-    // Check that we got the good entries
-    var found_good = false;
-    var found_another_good = false;
-    for (releases.items) |release| {
-        if (std.mem.eql(u8, release.repo_name, "good/repo")) {
-            found_good = true;
-        }
-        if (std.mem.eql(u8, release.repo_name, "another/good")) {
-            found_another_good = true;
-        }
-    }
-    try std.testing.expect(found_good);
-    try std.testing.expect(found_another_good);
-}
-
-test "compareReleasesByDate" {
-    const release1 = Release{
-        .repo_name = "test/repo1",
-        .tag_name = "v1.0.0",
-        .published_at = "2024-01-01T00:00:00Z",
-        .html_url = "https://github.com/test/repo1/releases/tag/v1.0.0",
-        .description = "First release",
-        .provider = "github",
-    };
-
-    const release2 = Release{
-        .repo_name = "test/repo2",
-        .tag_name = "v2.0.0",
-        .published_at = "2024-01-02T00:00:00Z",
-        .html_url = "https://github.com/test/repo2/releases/tag/v2.0.0",
-        .description = "Second release",
-        .provider = "github",
-    };
-
-    // release2 should come before release1 (more recent first)
-    try std.testing.expect(compareReleasesByDate({}, release2, release1));
-    try std.testing.expect(!compareReleasesByDate({}, release1, release2));
-}
-
-// Import XML parser tests
-test {
-    std.testing.refAllDecls(@import("xml_parser_tests.zig"));
-}
-
 test "Age-based release filtering" {
     const allocator = std.testing.allocator;
 
@@ -844,32 +425,29 @@ test "Age-based release filtering" {
     const recent_release = Release{
         .repo_name = "test/recent",
         .tag_name = "v1.0.0",
-        .published_at = try std.fmt.allocPrint(allocator, "{}", .{now - 86400}), // 1 day ago
+        .published_at = now - std.time.s_per_day, // 1 day ago
         .html_url = "https://github.com/test/recent/releases/tag/v1.0.0",
         .description = "Recent release",
         .provider = "github",
     };
-    defer allocator.free(recent_release.published_at);
 
     const old_release = Release{
         .repo_name = "test/old",
         .tag_name = "v0.1.0",
-        .published_at = try std.fmt.allocPrint(allocator, "{}", .{two_years_ago}),
+        .published_at = two_years_ago,
         .html_url = "https://github.com/test/old/releases/tag/v0.1.0",
         .description = "Old release",
         .provider = "github",
     };
-    defer allocator.free(old_release.published_at);
 
     const borderline_release = Release{
         .repo_name = "test/borderline",
         .tag_name = "v0.5.0",
-        .published_at = try std.fmt.allocPrint(allocator, "{}", .{one_year_ago + 3600}), // 1 hour within limit
+        .published_at = one_year_ago + std.time.s_per_hour, // 1 hour within limit
         .html_url = "https://github.com/test/borderline/releases/tag/v0.5.0",
         .description = "Borderline release",
         .provider = "github",
     };
-    defer allocator.free(borderline_release.published_at);
 
     const releases = [_]Release{ recent_release, old_release, borderline_release };
 
@@ -880,7 +458,7 @@ test "Age-based release filtering" {
     const cutoff_time = now - RELEASE_AGE_LIMIT_SECONDS;
 
     for (releases) |release| {
-        const release_time = parseReleaseTimestamp(release.published_at) catch 0;
+        const release_time = release.published_at;
         if (release_time >= cutoff_time) {
             try filtered.append(release);
         }
@@ -909,7 +487,7 @@ test "Age-based release filtering" {
     try std.testing.expect(!found_old);
 }
 
-// Import timestamp tests
+// Import others
 test {
     std.testing.refAllDecls(@import("timestamp_tests.zig"));
     std.testing.refAllDecls(@import("atom.zig"));

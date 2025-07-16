@@ -3,7 +3,7 @@ const http = std.http;
 const json = std.json;
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
-const zeit = @import("zeit");
+const utils = @import("../utils.zig");
 
 const Release = @import("../main.zig").Release;
 const Provider = @import("../Provider.zig");
@@ -222,7 +222,7 @@ fn getProjectReleases(allocator: Allocator, client: *http.Client, token: []const
         const release = Release{
             .repo_name = try allocator.dupe(u8, obj.get("name").?.string),
             .tag_name = try allocator.dupe(u8, obj.get("tag_name").?.string),
-            .published_at = try allocator.dupe(u8, obj.get("created_at").?.string),
+            .published_at = try utils.parseReleaseTimestamp(obj.get("created_at").?.string),
             .html_url = try allocator.dupe(u8, obj.get("_links").?.object.get("self").?.string),
             .description = try allocator.dupe(u8, desc_str),
             .provider = try allocator.dupe(u8, "gitlab"),
@@ -236,29 +236,9 @@ fn getProjectReleases(allocator: Allocator, client: *http.Client, token: []const
     }
 
     // Sort releases by date (most recent first)
-    std.mem.sort(Release, releases.items, {}, compareReleasesByDate);
+    std.mem.sort(Release, releases.items, {}, utils.compareReleasesByDate);
 
     return releases;
-}
-
-fn compareReleasesByDate(context: void, a: Release, b: Release) bool {
-    _ = context;
-    const timestamp_a = parseTimestamp(a.published_at) catch 0;
-    const timestamp_b = parseTimestamp(b.published_at) catch 0;
-    return timestamp_a > timestamp_b; // Most recent first
-}
-
-fn parseTimestamp(date_str: []const u8) !i64 {
-    // Try parsing as direct timestamp first
-    if (std.fmt.parseInt(i64, date_str, 10)) |timestamp| {
-        return timestamp;
-    } else |_| {
-        // Try parsing as ISO 8601 format using Zeit
-        const instant = zeit.instant(.{
-            .source = .{ .iso8601 = date_str },
-        }) catch return 0;
-        return @intCast(instant.timestamp);
-    }
 }
 
 test "gitlab provider" {
@@ -348,7 +328,7 @@ test "gitlab release parsing with live data snapshot" {
     }
 
     // Sort releases by date (most recent first)
-    std.mem.sort(Release, releases.items, {}, compareReleasesByDate);
+    std.mem.sort(Release, releases.items, {}, utils.compareReleasesByDate);
 
     // Verify parsing and sorting
     try std.testing.expectEqual(@as(usize, 3), releases.items.len);

@@ -3,7 +3,7 @@ const http = std.http;
 const json = std.json;
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
-const zeit = @import("zeit");
+const utils = @import("../utils.zig");
 
 const Release = @import("../main.zig").Release;
 const Provider = @import("../Provider.zig");
@@ -54,7 +54,7 @@ pub fn fetchReleasesForReposFiltered(self: *Self, allocator: Allocator, reposito
     var latest_date: i64 = 0;
     for (existing_releases) |release| {
         if (std.mem.eql(u8, release.provider, "sourcehut")) {
-            const release_time = parseReleaseTimestamp(release.published_at) catch 0;
+            const release_time = utils.parseReleaseTimestamp(release.published_at) catch 0;
             if (release_time > latest_date) {
                 latest_date = release_time;
             }
@@ -153,7 +153,7 @@ fn fetchReleasesMultiRepo(allocator: Allocator, client: *http.Client, token: []c
         const release = Release{
             .repo_name = try std.fmt.allocPrint(allocator, "~{s}/{s}", .{ tag_data.username, tag_data.reponame }),
             .tag_name = try allocator.dupe(u8, tag_data.tag_name),
-            .published_at = try allocator.dupe(u8, commit_date),
+            .published_at = try utils.parseReleaseTimestamp(commit_date),
             .html_url = try std.fmt.allocPrint(allocator, "https://git.sr.ht/~{s}/{s}/refs/{s}", .{ tag_data.username, tag_data.reponame, tag_data.tag_name }),
             .description = try std.fmt.allocPrint(allocator, "Tag {s} (commit: {s})", .{ tag_data.tag_name, tag_data.commit_id }),
             .provider = try allocator.dupe(u8, "sourcehut"),
@@ -166,7 +166,7 @@ fn fetchReleasesMultiRepo(allocator: Allocator, client: *http.Client, token: []c
     }
 
     // Sort releases by date (most recent first)
-    std.mem.sort(Release, releases.items, {}, compareReleasesByDate);
+    std.mem.sort(Release, releases.items, {}, utils.compareReleasesByDate);
 
     return releases;
 }
@@ -567,30 +567,6 @@ fn makeGraphQLRequest(allocator: Allocator, client: *http.Client, token: []const
     return try req.reader().readAllAlloc(allocator, 10 * 1024 * 1024);
 }
 
-fn compareReleasesByDate(context: void, a: Release, b: Release) bool {
-    _ = context;
-    const timestamp_a = parseTimestamp(a.published_at) catch 0;
-    const timestamp_b = parseTimestamp(b.published_at) catch 0;
-    return timestamp_a > timestamp_b; // Most recent first
-}
-
-fn parseReleaseTimestamp(date_str: []const u8) !i64 {
-    return parseTimestamp(date_str);
-}
-
-fn parseTimestamp(date_str: []const u8) !i64 {
-    // Try parsing as direct timestamp first
-    if (std.fmt.parseInt(i64, date_str, 10)) |timestamp| {
-        return timestamp;
-    } else |_| {
-        // Try parsing as ISO 8601 format using Zeit
-        const instant = zeit.instant(.{
-            .source = .{ .iso8601 = date_str },
-        }) catch return 0;
-        return @intCast(instant.timestamp);
-    }
-}
-
 fn filterNewReleases(allocator: Allocator, all_releases: []const Release, since_timestamp: i64) !ArrayList(Release) {
     var new_releases = ArrayList(Release).init(allocator);
     errdefer {
@@ -602,7 +578,7 @@ fn filterNewReleases(allocator: Allocator, all_releases: []const Release, since_
 
     for (all_releases) |release| {
         // Parse the published_at timestamp
-        const release_time = parseReleaseTimestamp(release.published_at) catch continue;
+        const release_time = utils.parseReleaseTimestamp(release.published_at) catch continue;
 
         if (release_time > since_timestamp) {
             // This is a new release, duplicate it for our list

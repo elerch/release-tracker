@@ -201,7 +201,13 @@ pub fn generateFeed(allocator: Allocator, releases: []const Release) ![]u8 {
         try writer.writeAll("</id>\n");
 
         try writer.writeAll("  <updated>");
-        try escapeXml(writer, release.published_at);
+        const published = zeit.Instant{
+            .timestamp = release.published_at * std.time.ns_per_s,
+            .timezone = &zeit.utc,
+        };
+        // try escapeXml(writer, release.published_at);
+        // try std.testing.expect(std.mem.indexOf(u8, atom_content, "<updated>2024-01-01T00:00:00Z</updated>") != null);
+        try published.time().strftime(writer, "%Y-%m-%dT%H:%M:%SZ");
         try writer.writeAll("</updated>\n");
 
         try writer.writeAll("  <author><name>");
@@ -276,7 +282,10 @@ test "Atom feed generation with markdown" {
         Release{
             .repo_name = "test/repo",
             .tag_name = "v1.0.0",
-            .published_at = "2024-01-01T00:00:00Z",
+            .published_at = @intCast(@divTrunc(
+                (try zeit.instant(.{ .source = .{ .iso8601 = "2024-01-01T00:00:00Z" } })).timestamp,
+                std.time.ns_per_s,
+            )),
             .html_url = "https://github.com/test/repo/releases/tag/v1.0.0",
             .description = "## What's Changed\n* Fixed bug\n* Added feature",
             .provider = "github",
@@ -301,7 +310,10 @@ test "Atom feed with fallback markdown" {
         Release{
             .repo_name = "test/repo",
             .tag_name = "v1.0.0",
-            .published_at = "2024-01-01T00:00:00Z",
+            .published_at = @intCast(@divTrunc(
+                (try zeit.instant(.{ .source = .{ .iso8601 = "2024-01-01T00:00:00Z" } })).timestamp,
+                std.time.ns_per_s,
+            )),
             .html_url = "https://github.com/test/repo/releases/tag/v1.0.0",
             .description = "```javascript\nconst x = 1;\n```",
             .provider = "github",
@@ -323,7 +335,10 @@ test "Atom feed with special characters" {
         Release{
             .repo_name = "test/repo<script>",
             .tag_name = "v1.0.0 & more",
-            .published_at = "2024-01-01T00:00:00Z",
+            .published_at = @intCast(@divTrunc(
+                (try zeit.instant(.{ .source = .{ .iso8601 = "2024-01-01T00:00:00Z" } })).timestamp,
+                std.time.ns_per_s,
+            )),
             .html_url = "https://github.com/test/repo/releases/tag/v1.0.0",
             .description = "Test \"release\" with <special> chars & symbols",
             .provider = "github",
