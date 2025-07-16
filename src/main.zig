@@ -15,6 +15,9 @@ const utils = @import("utils.zig");
 
 const Provider = @import("Provider.zig");
 
+// Configuration: Only include releases from the last n days
+const RELEASE_AGE_LIMIT_SECONDS: i64 = 90 * std.time.s_per_day;
+
 fn print(comptime fmt: []const u8, args: anytype) void {
     if (comptime @import("builtin").is_test) {
         const build_options = @import("build_options");
@@ -55,9 +58,6 @@ fn printInfo(comptime fmt: []const u8, args: anytype) void {
     if (!builtin.is_test)
         stderr.print(fmt, args) catch {};
 }
-
-// Configuration: Only include releases from the last 365 days
-const RELEASE_AGE_LIMIT_SECONDS: i64 = 365 * std.time.s_per_day; // Get from last 365 days
 
 pub const Release = struct {
     repo_name: []const u8,
