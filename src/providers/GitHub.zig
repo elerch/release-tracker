@@ -54,6 +54,10 @@ pub fn fetchReleases(self: *Self, allocator: Allocator) !ArrayList(Release) {
 
     const starred_duration: u64 = @intCast(starred_end_time - starred_start_time);
     std.log.debug("GitHub: Found {} starred repositories in {}ms", .{ starred_repos.items.len, starred_duration });
+
+    // Check for potentially inaccessible repositories due to enterprise policies
+    // try checkForInaccessibleRepos(allocator, &client, self.token, starred_repos.items);
+
     std.log.debug("GitHub: Processing {} starred repositories with thread pool...", .{starred_repos.items.len});
 
     const thread_start_time = std.time.milliTimestamp();
@@ -421,6 +425,71 @@ fn getRepoReleases(allocator: Allocator, client: *http.Client, token: []const u8
 fn compareReleasesByDate(context: void, a: Release, b: Release) bool {
     _ = context;
     return a.published_at > b.published_at;
+}
+
+fn checkForInaccessibleRepos(allocator: Allocator, client: *http.Client, token: []const u8, starred_repos: [][]const u8) !void {
+    const is_test = @import("builtin").is_test;
+    if (is_test) return; // Skip in tests
+
+    // List of repositories that are commonly affected by enterprise policies
+    const problematic_repos = [_][]const u8{
+        "aws/language-server-runtimes",
+        "aws/aws-cli",
+        "aws/aws-sdk-js",
+        "aws/aws-cdk",
+    };
+
+    const auth_header = try std.fmt.allocPrint(allocator, "Bearer {s}", .{token});
+    defer allocator.free(auth_header);
+
+    for (problematic_repos) |repo| {
+        // Check if this repo is in our starred list
+        var found_in_starred = false;
+        for (starred_repos) |starred_repo| {
+            if (std.mem.eql(u8, starred_repo, repo)) {
+                found_in_starred = true;
+                break;
+            }
+        }
+
+        if (!found_in_starred) {
+            // Check if we can access this repository directly to see if it's a policy issue
+            const check_url = try std.fmt.allocPrint(allocator, "https://api.github.com/user/starred/{s}", .{repo});
+            defer allocator.free(check_url);
+
+            const uri = std.Uri.parse(check_url) catch continue;
+
+            var server_header_buffer: [16 * 1024]u8 = undefined;
+            var req = client.open(.GET, uri, .{
+                .server_header_buffer = &server_header_buffer,
+                .extra_headers = &.{
+                    .{ .name = "Authorization", .value = auth_header },
+                    .{ .name = "Accept", .value = "application/vnd.github.v3+json" },
+                    .{ .name = "User-Agent", .value = "release-tracker/1.0" },
+                },
+            }) catch continue;
+            defer req.deinit();
+
+            req.send() catch continue;
+            req.wait() catch continue;
+
+            if (req.response.status == .forbidden) {
+                // Try to read the error response for more details
+                const error_body = req.reader().readAllAlloc(allocator, 4096) catch "";
+                defer if (error_body.len > 0) allocator.free(error_body);
+
+                const stderr = std.io.getStdErr().writer();
+                if (std.mem.indexOf(u8, error_body, "enterprise") != null or
+                    std.mem.indexOf(u8, error_body, "personal access token") != null or
+                    std.mem.indexOf(u8, error_body, "fine-grained") != null)
+                {
+                    stderr.print("GitHub: Repository '{s}' may be starred but is inaccessible due to enterprise policies: {s}\n", .{ repo, error_body }) catch {};
+                } else {
+                    stderr.print("GitHub: Repository '{s}' is not accessible (HTTP 403): {s}\n", .{ repo, error_body }) catch {};
+                }
+            }
+        }
+    }
 }
 
 test "github provider" {

@@ -24,10 +24,10 @@ zig build
 2. Run the application:
 
 ```bash
-./zig-out/bin/release-tracker config.json
+./zig-out/bin/release-tracker config.json [output filename]
 ```
 
-3. The RSS feed will be generated as `releases.xml`
+3. The RSS feed will be generated as `releases.xml` by default
 
 ## Configuration
 
@@ -36,7 +36,7 @@ Create a `config.json` file with your API tokens:
 ```json
 {
   "github_token": "your_github_token",
-  "gitlab_token": "your_gitlab_token", 
+  "gitlab_token": "your_gitlab_token",
   "codeberg_token": "your_codeberg_token",
   "sourcehut": {
     "repositories": [
@@ -50,10 +50,27 @@ Create a `config.json` file with your API tokens:
 
 ### API Token Setup
 
-- **GitHub**: Create a Personal Access Token with `public_repo` and `user` scopes
+- **GitHub**: Create a Personal Access Token with and `user:read` scope. Classic is preferred (see note)
 - **GitLab**: Create a Personal Access Token with `read_api` scope
 - **Codeberg**: Create an Access Token in your account settings
 - **SourceHut**: No token required for public repositories. Specify repositories to track in the configuration.
+
+Note on GitHub PATs. Some GitHub orgs will place additional restrictions on
+PATs. If your token does not align with those policies, the GitHub stars API
+will **silently discard** repos from that org. The only way to tell something
+is off is by detecting the starred repositories count at
+https://github.com/<username>?tab=stars is more than what is reported in the
+application output.
+
+There is a `checkForInaccessibleRepos` function in the GitHub provider that
+can detect this, but is limited to the `aws` organization, which may or may
+not apply in all situations. For this reason, it is included in the code, but
+disabled. If needed, uncomment the call and choose a repo from your enterprise
+of choice.
+
+These org policies do not seem to effect classic tokens, so the best approach
+with GitHub is to create and use a classic token instead of the new fine-grained
+tokens.
 
 ## Testing
 
