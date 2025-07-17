@@ -169,9 +169,9 @@ pub fn generateFeed(allocator: Allocator, releases: []const Release) ![]u8 {
         \\<feed xmlns="http://www.w3.org/2005/Atom">
         \\<title>Repository Releases</title>
         \\<subtitle>New releases from starred repositories</subtitle>
-        \\<link href="https://github.com" rel="alternate"/>
-        \\<link href="https://example.com/releases.xml" rel="self"/>
-        \\<id>https://example.com/releases</id>
+        \\<link href="https://releases.lerch.org" rel="alternate"/>
+        \\<link href="https://releases.lerch.org/atom.xml" rel="self"/>
+        \\<id>https://releases.lerch.org</id>
         \\
     );
 
@@ -303,6 +303,37 @@ test "Atom feed generation with markdown" {
     try std.testing.expect(std.mem.indexOf(u8, atom_content, "&lt;ul&gt;") != null);
 }
 
+test "Atom feed with fenced code blocks" {
+    const allocator = std.testing.allocator;
+
+    const releases = [_]Release{
+        Release{
+            .repo_name = "test/repo",
+            .tag_name = "v1.0.0",
+            .published_at = @intCast(@divTrunc(
+                (try zeit.instant(.{ .source = .{ .iso8601 = "2024-01-01T00:00:00Z" } })).timestamp,
+                std.time.ns_per_s,
+            )),
+            .html_url = "https://github.com/test/repo/releases/tag/v1.0.0",
+            .description = "Here's some code:\n```javascript\nconst greeting = 'Hello World';\nconsole.log(greeting);\n```\nEnd of example.",
+            .provider = "github",
+        },
+    };
+
+    const atom_content = try generateFeed(allocator, &releases);
+    defer allocator.free(atom_content);
+
+    // Should NOT contain fallback metadata since fenced code blocks are now supported
+    try std.testing.expect(std.mem.indexOf(u8, atom_content, "markdown-fallback") == null);
+
+    // Should contain proper HTML code block structure
+    try std.testing.expect(std.mem.indexOf(u8, atom_content, "&lt;pre&gt;&lt;code class=&quot;language-javascript&quot;&gt;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, atom_content, "&lt;/code&gt;&lt;/pre&gt;") != null);
+
+    // Should contain the escaped code content
+    try std.testing.expect(std.mem.indexOf(u8, atom_content, "const greeting = &amp;apos;Hello World&amp;apos;;") != null);
+}
+
 test "Atom feed with fallback markdown" {
     const allocator = std.testing.allocator;
 
@@ -315,7 +346,7 @@ test "Atom feed with fallback markdown" {
                 std.time.ns_per_s,
             )),
             .html_url = "https://github.com/test/repo/releases/tag/v1.0.0",
-            .description = "```javascript\nconst x = 1;\n```",
+            .description = "| Column 1 | Column 2 |\n|----------|----------|\n| Value 1  | Value 2  |",
             .provider = "github",
         },
     };

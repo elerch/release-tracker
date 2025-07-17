@@ -21,9 +21,52 @@ pub fn convertMarkdownToHtml(allocator: Allocator, markdown: []const u8) !Conver
     var lines = std.mem.splitScalar(u8, markdown, '\n');
     var in_list = false;
     var list_type: ?u8 = null; // '*' or '-'
+    var in_code_block = false;
+    var code_block_fence: []const u8 = "";
 
     while (lines.next()) |line| {
         const trimmed = std.mem.trim(u8, line, " \t\r");
+
+        // Handle fenced code blocks
+        if (std.mem.startsWith(u8, trimmed, "```") or std.mem.startsWith(u8, trimmed, "~~~")) {
+            const fence = if (std.mem.startsWith(u8, trimmed, "```")) "```" else "~~~";
+
+            if (!in_code_block) {
+                // Starting a code block
+                if (in_list) {
+                    try result.appendSlice("</ul>\n");
+                    in_list = false;
+                    list_type = null;
+                }
+
+                in_code_block = true;
+                code_block_fence = fence;
+
+                // Extract language hint if present
+                const lang_hint = std.mem.trim(u8, trimmed[fence.len..], " \t\r");
+                if (lang_hint.len > 0) {
+                    try result.appendSlice("<pre><code class=\"language-");
+                    try appendEscapedHtml(&result, lang_hint);
+                    try result.appendSlice("\">");
+                } else {
+                    try result.appendSlice("<pre><code>");
+                }
+                continue;
+            } else if (std.mem.eql(u8, fence, code_block_fence)) {
+                // Ending the code block
+                in_code_block = false;
+                code_block_fence = "";
+                try result.appendSlice("</code></pre>\n");
+                continue;
+            }
+        }
+
+        // If we're inside a code block, just add the line as-is (escaped)
+        if (in_code_block) {
+            try appendEscapedHtml(&result, line);
+            try result.appendSlice("\n");
+            continue;
+        }
 
         if (trimmed.len == 0) {
             try result.appendSlice("<br/>\n");
@@ -128,6 +171,11 @@ pub fn convertMarkdownToHtml(allocator: Allocator, markdown: []const u8) !Conver
     // Close any remaining list
     if (in_list) {
         try result.appendSlice("</ul>\n");
+    }
+
+    // Close any unclosed code block
+    if (in_code_block) {
+        try result.appendSlice("</code></pre>\n");
     }
 
     return ConversionResult{
@@ -313,9 +361,6 @@ fn findInlineCode(text: []const u8) ?TextInfo {
 
 /// Check if text contains complex markdown patterns we don't handle
 fn hasComplexMarkdown(text: []const u8) bool {
-    // Code blocks
-    if (std.mem.indexOf(u8, text, "```") != null) return true;
-
     // Tables
     if (std.mem.indexOf(u8, text, "|") != null) return true;
 
@@ -334,7 +379,66 @@ fn hasComplexMarkdown(text: []const u8) bool {
     return false;
 }
 
-// Tests
+test "convert fenced code blocks" {
+    const allocator = testing.allocator;
+
+    // Test basic fenced code block with backticks
+    const markdown1 = "Here's some code:\n```\nconst x = 42;\nconsole.log(x);\n```\nEnd of code.";
+    const result1 = try convertMarkdownToHtml(allocator, markdown1);
+    defer result1.deinit(allocator);
+
+    const expected1 = "<p>Here&apos;s some code:</p>\n<pre><code>const x = 42;\nconsole.log(x);\n</code></pre>\n<p>End of code.</p>\n";
+    try testing.expectEqualStrings(expected1, result1.html);
+    try testing.expect(!result1.has_fallback);
+
+    // Test fenced code block with language hint
+    const markdown2 = "```javascript\nconst greeting = 'Hello World';\nconsole.log(greeting);\n```";
+    const result2 = try convertMarkdownToHtml(allocator, markdown2);
+    defer result2.deinit(allocator);
+
+    const expected2 = "<pre><code class=\"language-javascript\">const greeting = &apos;Hello World&apos;;\nconsole.log(greeting);\n</code></pre>\n";
+    try testing.expectEqualStrings(expected2, result2.html);
+    try testing.expect(!result2.has_fallback);
+
+    // Test fenced code block with tildes
+    const markdown3 = "~~~python\ndef hello():\n    print('Hello!')\n~~~";
+    const result3 = try convertMarkdownToHtml(allocator, markdown3);
+    defer result3.deinit(allocator);
+
+    const expected3 = "<pre><code class=\"language-python\">def hello():\n    print(&apos;Hello!&apos;)\n</code></pre>\n";
+    try testing.expectEqualStrings(expected3, result3.html);
+    try testing.expect(!result3.has_fallback);
+
+    // Test unclosed code block (should auto-close)
+    const markdown4 = "```\nunclosed code block\nmore code";
+    const result4 = try convertMarkdownToHtml(allocator, markdown4);
+    defer result4.deinit(allocator);
+
+    const expected4 = "<pre><code>unclosed code block\nmore code\n</code></pre>\n";
+    try testing.expectEqualStrings(expected4, result4.html);
+    try testing.expect(!result4.has_fallback);
+
+    if (std.process.hasEnvVar(allocator, "test-debug") catch false) {
+        std.debug.print("Fenced code blocks test - Input: {s}\nOutput: {s}\n", .{ markdown1, result1.html });
+    }
+}
+
+test "inline code with backticks" {
+    const allocator = testing.allocator;
+
+    const markdown = "Use `const` for constants and `let` for variables.";
+    const result = try convertMarkdownToHtml(allocator, markdown);
+    defer result.deinit(allocator);
+
+    const expected = "<p>Use <code>const</code> for constants and <code>let</code> for variables.</p>\n";
+    try testing.expectEqualStrings(expected, result.html);
+    try testing.expect(!result.has_fallback);
+
+    if (std.process.hasEnvVar(allocator, "test-debug") catch false) {
+        std.debug.print("Inline code test - Input: {s}\nOutput: {s}\n", .{ markdown, result.html });
+    }
+}
+
 test "convert headers" {
     const allocator = testing.allocator;
 

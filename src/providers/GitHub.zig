@@ -132,7 +132,7 @@ fn fetchRepoReleasesTask(task: *RepoFetchTask) void {
     defer client.deinit();
 
     const repo_releases = getRepoReleases(task.allocator, &client, task.token, task.repo) catch |err| {
-        task.error_msg = std.fmt.allocPrint(task.allocator, "{}", .{err}) catch "Unknown error";
+        task.error_msg = std.fmt.allocPrint(task.allocator, "{s}: {}", .{ task.repo, err }) catch "Unknown error";
         return;
     };
 
@@ -378,6 +378,15 @@ fn getRepoReleases(allocator: Allocator, client: *http.Client, token: []const u8
     try req.wait();
 
     if (req.response.status != .ok) {
+        const is_test = @import("builtin").is_test;
+        if (!is_test) {
+            // Try to read the error response body for more details
+            const error_body = req.reader().readAllAlloc(allocator, 4096) catch "";
+            defer if (error_body.len > 0) allocator.free(error_body);
+
+            const stderr = std.io.getStdErr().writer();
+            stderr.print("GitHub: Failed to fetch releases for {s}: HTTP {} - {s}\n", .{ repo, @intFromEnum(req.response.status), error_body }) catch {};
+        }
         return error.HttpRequestFailed;
     }
 

@@ -376,9 +376,9 @@ test "atom feed generation" {
     try std.testing.expect(std.mem.indexOf(u8, atom_content, "<feed xmlns=\"http://www.w3.org/2005/Atom\">") != null);
     try std.testing.expect(std.mem.indexOf(u8, atom_content, "<title>Repository Releases</title>") != null);
     try std.testing.expect(std.mem.indexOf(u8, atom_content, "<subtitle>New releases from starred repositories</subtitle>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, atom_content, "<link href=\"https://github.com\" rel=\"alternate\"/>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, atom_content, "<link href=\"https://example.com/releases.xml\" rel=\"self\"/>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, atom_content, "<id>https://example.com/releases</id>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, atom_content, "<link href=\"https://releases.lerch.org\" rel=\"alternate\"/>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, atom_content, "<link href=\"https://releases.lerch.org/atom.xml\" rel=\"self\"/>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, atom_content, "<id>https://releases.lerch.org</id>") != null);
     try std.testing.expect(std.mem.indexOf(u8, atom_content, "<updated>") != null);
     try std.testing.expect(std.mem.indexOf(u8, atom_content, "<entry>") != null);
     try std.testing.expect(std.mem.indexOf(u8, atom_content, "</feed>") != null);
