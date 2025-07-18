@@ -423,6 +423,107 @@ fn getRepoReleases(allocator: Allocator, client: *http.Client, token: []const u8
     return releases;
 }
 
+fn getRepoTags(allocator: Allocator, client: *http.Client, token: []const u8, repo: []const u8) !ArrayList(Release) {
+    var tags = ArrayList(Release).init(allocator);
+
+    const url = try std.fmt.allocPrint(allocator, "https://api.github.com/repos/{s}/tags", .{repo});
+    defer allocator.free(url);
+
+    const uri = try std.Uri.parse(url);
+
+    const auth_header = try std.fmt.allocPrint(allocator, "Bearer {s}", .{token});
+    defer allocator.free(auth_header);
+
+    var server_header_buffer: [16 * 1024]u8 = undefined;
+    var req = try client.open(.GET, uri, .{
+        .server_header_buffer = &server_header_buffer,
+        .extra_headers = &.{
+            .{ .name = "Authorization", .value = auth_header },
+            .{ .name = "Accept", .value = "application/vnd.github.v3+json" },
+            .{ .name = "User-Agent", .value = "release-tracker/1.0" },
+        },
+    });
+    defer req.deinit();
+
+    try req.send();
+    try req.wait();
+
+    if (req.response.status != .ok) {
+        return error.HttpRequestFailed;
+    }
+
+    const body = try req.reader().readAllAlloc(allocator, 10 * 1024 * 1024);
+    defer allocator.free(body);
+
+    const parsed = try json.parseFromSlice(json.Value, allocator, body, .{});
+    defer parsed.deinit();
+
+    const array = parsed.value.array;
+    for (array.items) |item| {
+        const obj = item.object;
+        const commit_obj = obj.get("commit").?.object;
+        const commit_sha = commit_obj.get("sha").?.string;
+        const tag_name = obj.get("name").?.string;
+
+        // Get commit date for this tag
+        const commit_date = getCommitDate(allocator, client, token, repo, commit_sha) catch continue;
+
+        // Create tag URL (GitHub doesn't provide direct tag URLs, so we construct one)
+        const tag_url = try std.fmt.allocPrint(allocator, "https://github.com/{s}/releases/tag/{s}", .{ repo, tag_name });
+
+        const tag_release = Release{
+            .repo_name = try allocator.dupe(u8, repo),
+            .tag_name = try allocator.dupe(u8, tag_name), // Store actual tag name
+            .published_at = commit_date,
+            .html_url = tag_url,
+            .description = try allocator.dupe(u8, commit_sha), // Temporarily store commit SHA for comparison
+            .provider = try allocator.dupe(u8, "github"),
+            .is_tag = true,
+        };
+
+        try tags.append(tag_release);
+    }
+
+    return tags;
+}
+
+fn getCommitDate(allocator: Allocator, client: *http.Client, token: []const u8, repo: []const u8, commit_sha: []const u8) !i64 {
+    const url = try std.fmt.allocPrint(allocator, "https://api.github.com/repos/{s}/commits/{s}", .{ repo, commit_sha });
+    defer allocator.free(url);
+
+    const uri = try std.Uri.parse(url);
+
+    const auth_header = try std.fmt.allocPrint(allocator, "Bearer {s}", .{token});
+    defer allocator.free(auth_header);
+
+    var server_header_buffer: [16 * 1024]u8 = undefined;
+    var req = try client.open(.GET, uri, .{
+        .server_header_buffer = &server_header_buffer,
+        .extra_headers = &.{
+            .{ .name = "Authorization", .value = auth_header },
+            .{ .name = "Accept", .value = "application/vnd.github.v3+json" },
+            .{ .name = "User-Agent", .value = "release-tracker/1.0" },
+        },
+    });
+    defer req.deinit();
+
+    try req.send();
+    try req.wait();
+
+    if (req.response.status != .ok) {
+        return error.HttpRequestFailed;
+    }
+
+    const body = try req.reader().readAllAlloc(allocator, 1024 * 1024);
+    defer allocator.free(body);
+
+    const parsed = try json.parseFromSlice(json.Value, allocator, body, .{});
+    defer parsed.deinit();
+
+    const commit_date_str = parsed.value.object.get("commit").?.object.get("committer").?.object.get("date").?.string;
+    return try utils.parseReleaseTimestamp(commit_date_str);
+}
+
 fn compareReleasesByDate(context: void, a: Release, b: Release) bool {
     _ = context;
     return a.published_at > b.published_at;
