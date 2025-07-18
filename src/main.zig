@@ -197,8 +197,6 @@ pub fn main() !u8 {
                 last_index += 1;
             } else break;
         }
-        // Total releases in feed: 1170 of 3591 total in last 365 days
-        std.log.debug("last_index: {} : {s}", .{ last_index, result.provider_name });
         try all_releases.appendSlice(result.releases.items[0..last_index]);
     }
 
