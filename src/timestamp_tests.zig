@@ -79,6 +79,7 @@ test "compareReleasesByDate with various timestamp formats" {
         .html_url = "https://github.com/test/iso-early/releases/tag/v1.0.0",
         .description = "Early ISO format",
         .provider = "github",
+        .is_tag = false,
     };
 
     const release_iso_late = Release{
@@ -91,6 +92,7 @@ test "compareReleasesByDate with various timestamp formats" {
         .html_url = "https://github.com/test/iso-late/releases/tag/v2.0.0",
         .description = "Late ISO format",
         .provider = "github",
+        .is_tag = false,
     };
 
     const release_invalid = Release{
@@ -100,6 +102,7 @@ test "compareReleasesByDate with various timestamp formats" {
         .html_url = "https://github.com/test/invalid/releases/tag/v3.0.0",
         .description = "Invalid format",
         .provider = "github",
+        .is_tag = false,
     };
 
     // Later date should come before earlier date (more recent first)

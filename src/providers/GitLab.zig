@@ -36,6 +36,7 @@ pub fn fetchReleases(self: *Self, allocator: Allocator) !ArrayList(Release) {
     }
 
     // Get releases for each project
+    // TODO: Investigate tags similar to GitHub
     for (starred_projects.items) |project_id| {
         const project_releases = getProjectReleases(allocator, &client, self.token, project_id) catch |err| {
             const stderr = std.io.getStdErr().writer();
@@ -226,6 +227,7 @@ fn getProjectReleases(allocator: Allocator, client: *http.Client, token: []const
             .html_url = try allocator.dupe(u8, obj.get("_links").?.object.get("self").?.string),
             .description = try allocator.dupe(u8, desc_str),
             .provider = try allocator.dupe(u8, "gitlab"),
+            .is_tag = false,
         };
 
         releases.append(release) catch |err| {
@@ -322,6 +324,7 @@ test "gitlab release parsing with live data snapshot" {
             .html_url = try allocator.dupe(u8, obj.get("_links").?.object.get("self").?.string),
             .description = try allocator.dupe(u8, desc_str),
             .provider = try allocator.dupe(u8, "gitlab"),
+            .is_tag = false,
         };
 
         try releases.append(release);

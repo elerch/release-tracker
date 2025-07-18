@@ -28,6 +28,7 @@ test "Atom feed validates against W3C validator" {
             .html_url = "https://github.com/ziglang/zig/releases/tag/0.14.0",
             .description = "Zig 0.14.0 release with many improvements",
             .provider = "github",
+            .is_tag = false,
         },
         Release{
             .repo_name = "example/test",
@@ -36,6 +37,7 @@ test "Atom feed validates against W3C validator" {
             .html_url = "https://github.com/example/test/releases/tag/v1.2.3",
             .description = "Bug fixes and performance improvements",
             .provider = "github",
+            .is_tag = false,
         },
     };
 

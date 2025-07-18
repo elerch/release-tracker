@@ -37,6 +37,7 @@ pub fn fetchReleases(self: *Self, allocator: Allocator) !ArrayList(Release) {
 
     // Get releases for each repo
     for (starred_repos.items) |repo| {
+        // TODO: Investigate the tags/releases situation similar to GitHub
         const repo_releases = getRepoReleases(allocator, &client, self.token, repo) catch |err| {
             const stderr = std.io.getStdErr().writer();
             stderr.print("Error fetching Codeberg releases for {s}: {}\n", .{ repo, err }) catch {};
@@ -239,6 +240,7 @@ fn getRepoReleases(allocator: Allocator, client: *http.Client, token: []const u8
             .html_url = try allocator.dupe(u8, html_url_value.string),
             .description = try allocator.dupe(u8, body_str),
             .provider = try allocator.dupe(u8, "codeberg"),
+            .is_tag = false,
         };
 
         releases.append(release) catch |err| {
@@ -317,6 +319,7 @@ test "codeberg release parsing with live data snapshot" {
             .html_url = try allocator.dupe(u8, html_url_value.string),
             .description = try allocator.dupe(u8, body_str),
             .provider = try allocator.dupe(u8, "codeberg"),
+            .is_tag = false,
         };
 
         try releases.append(release);

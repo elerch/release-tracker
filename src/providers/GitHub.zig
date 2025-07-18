@@ -414,6 +414,7 @@ fn getRepoReleases(allocator: Allocator, client: *http.Client, token: []const u8
             .html_url = try allocator.dupe(u8, obj.get("html_url").?.string),
             .description = try allocator.dupe(u8, body_str),
             .provider = try allocator.dupe(u8, "github"),
+            .is_tag = false,
         };
 
         try releases.append(release);
@@ -564,6 +565,7 @@ test "github release parsing with live data snapshot" {
             .html_url = try allocator.dupe(u8, obj.get("html_url").?.string),
             .description = try allocator.dupe(u8, body_str),
             .provider = try allocator.dupe(u8, "github"),
+            .is_tag = false,
         };
 
         try releases.append(release);

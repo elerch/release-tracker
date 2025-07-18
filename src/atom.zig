@@ -190,6 +190,9 @@ pub fn generateFeed(allocator: Allocator, releases: []const Release) ![]u8 {
         try escapeXml(writer, release.repo_name);
         try writer.writeAll(" - ");
         try escapeXml(writer, release.tag_name);
+        if (release.is_tag) {
+            try writer.writeAll(" (tag)");
+        }
         try writer.writeAll("</title>\n");
 
         try writer.writeAll("  <link href=\"");
@@ -289,6 +292,7 @@ test "Atom feed generation with markdown" {
             .html_url = "https://github.com/test/repo/releases/tag/v1.0.0",
             .description = "## What's Changed\n* Fixed bug\n* Added feature",
             .provider = "github",
+            .is_tag = false,
         },
     };
 
@@ -317,6 +321,7 @@ test "Atom feed with fenced code blocks" {
             .html_url = "https://github.com/test/repo/releases/tag/v1.0.0",
             .description = "Here's some code:\n```javascript\nconst greeting = 'Hello World';\nconsole.log(greeting);\n```\nEnd of example.",
             .provider = "github",
+            .is_tag = false,
         },
     };
 
@@ -348,6 +353,7 @@ test "Atom feed with fallback markdown" {
             .html_url = "https://github.com/test/repo/releases/tag/v1.0.0",
             .description = "| Column 1 | Column 2 |\n|----------|----------|\n| Value 1  | Value 2  |",
             .provider = "github",
+            .is_tag = false,
         },
     };
 
@@ -373,6 +379,7 @@ test "Atom feed with special characters" {
             .html_url = "https://github.com/test/repo/releases/tag/v1.0.0",
             .description = "Test \"release\" with <special> chars & symbols",
             .provider = "github",
+            .is_tag = false,
         },
     };
 

@@ -150,6 +150,7 @@ fn fetchReleasesMultiRepo(allocator: Allocator, client: *http.Client, token: []c
         else
             "1970-01-01T00:00:00Z";
 
+        // TODO: Investigate annotated tags as the description here
         const release = Release{
             .repo_name = try std.fmt.allocPrint(allocator, "~{s}/{s}", .{ tag_data.username, tag_data.reponame }),
             .tag_name = try allocator.dupe(u8, tag_data.tag_name),
@@ -157,6 +158,7 @@ fn fetchReleasesMultiRepo(allocator: Allocator, client: *http.Client, token: []c
             .html_url = try std.fmt.allocPrint(allocator, "https://git.sr.ht/~{s}/{s}/refs/{s}", .{ tag_data.username, tag_data.reponame, tag_data.tag_name }),
             .description = try std.fmt.allocPrint(allocator, "Tag {s} (commit: {s})", .{ tag_data.tag_name, tag_data.commit_id }),
             .provider = try allocator.dupe(u8, "sourcehut"),
+            .is_tag = false, // Well, this is a lie. However, sourcehut doesn't have "releases", so it is a little weird to always set this true
         };
 
         releases.append(release) catch |err| {

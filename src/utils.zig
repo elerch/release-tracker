@@ -53,6 +53,7 @@ test "compareReleasesByDate" {
         .html_url = "https://github.com/test/repo1/releases/tag/v1.0.0",
         .description = "First release",
         .provider = "github",
+        .is_tag = false,
     };
 
     const release2 = Release{
@@ -65,6 +66,7 @@ test "compareReleasesByDate" {
         .html_url = "https://github.com/test/repo2/releases/tag/v2.0.0",
         .description = "Second release",
         .provider = "github",
+        .is_tag = false,
     };
 
     // release2 should come before release1 (more recent first)

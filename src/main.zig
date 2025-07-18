@@ -66,6 +66,7 @@ pub const Release = struct {
     html_url: []const u8,
     description: []const u8,
     provider: []const u8,
+    is_tag: bool = false,
 
     pub fn deinit(self: Release, allocator: Allocator) void {
         allocator.free(self.repo_name);
@@ -363,6 +364,7 @@ test "atom feed generation" {
             .html_url = "https://github.com/test/repo/releases/tag/v1.0.0",
             .description = "Test release",
             .provider = "github",
+            .is_tag = false,
         },
     };
 
@@ -427,6 +429,7 @@ test "Age-based release filtering" {
         .html_url = "https://github.com/test/recent/releases/tag/v1.0.0",
         .description = "Recent release",
         .provider = "github",
+        .is_tag = false,
     };
 
     const old_release = Release{
@@ -436,6 +439,7 @@ test "Age-based release filtering" {
         .html_url = "https://github.com/test/old/releases/tag/v0.1.0",
         .description = "Old release",
         .provider = "github",
+        .is_tag = false,
     };
 
     const borderline_release = Release{
@@ -445,6 +449,7 @@ test "Age-based release filtering" {
         .html_url = "https://github.com/test/borderline/releases/tag/v0.5.0",
         .description = "Borderline release",
         .provider = "github",
+        .is_tag = false,
     };
 
     const releases = [_]Release{ recent_release, old_release, borderline_release };
