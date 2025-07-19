@@ -39,7 +39,7 @@ jobs:
         run: |
           curl -s --user ${{ github.actor }}:${{ secrets.PACKAGE_PUSH }} \
             --upload-file release-tracker-x86_64-linux.tar.gz \
-            https://git.lerch.org/api/packages/lobo/generic/aws-sdk-with-models/${{ github.sha }}/release-tracker-x86_64-linux.tar.gz
+            https://git.lerch.org/api/packages/lobo/generic/release-tracker/${{ github.sha }}/release-tracker-x86_64-linux.tar.gz
 
       - name: Upload
         uses: actions/upload-artifact@v3
