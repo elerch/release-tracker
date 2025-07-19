@@ -680,6 +680,12 @@ test "github release parsing with live data snapshot" {
     try std.testing.expectEqualStrings("v1.2.0", releases.items[0].tag_name);
     try std.testing.expectEqualStrings("v1.1.0", releases.items[1].tag_name);
     try std.testing.expectEqualStrings("v1.0.0", releases.items[2].tag_name);
-    try std.testing.expectEqual(try @import("zeit").instant(.{ .source = .{ .iso8601 = "2024-01-15T10:30:00Z" } }), releases.items[0].published_at);
+    try std.testing.expectEqual(
+        @as(i64, @intCast(@divTrunc(
+            (try @import("zeit").instant(.{ .source = .{ .iso8601 = "2024-01-15T10:30:00Z" } })).timestamp,
+            std.time.ns_per_s,
+        ))),
+        releases.items[0].published_at,
+    );
     try std.testing.expectEqualStrings("github", releases.items[0].provider);
 }

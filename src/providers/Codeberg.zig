@@ -315,7 +315,7 @@ test "codeberg release parsing with live data snapshot" {
         const release = Release{
             .repo_name = try allocator.dupe(u8, "example/project"),
             .tag_name = try allocator.dupe(u8, tag_name_value.string),
-            .published_at = try allocator.dupe(u8, published_at_value.string),
+            .published_at = try utils.parseReleaseTimestamp(published_at_value.string),
             .html_url = try allocator.dupe(u8, html_url_value.string),
             .description = try allocator.dupe(u8, body_str),
             .provider = try allocator.dupe(u8, "codeberg"),
@@ -333,6 +333,12 @@ test "codeberg release parsing with live data snapshot" {
     try std.testing.expectEqualStrings("v3.0.1", releases.items[0].tag_name);
     try std.testing.expectEqualStrings("v3.0.0", releases.items[1].tag_name);
     try std.testing.expectEqualStrings("v2.9.5", releases.items[2].tag_name);
-    try std.testing.expectEqualStrings("2024-01-25T11:20:30Z", releases.items[0].published_at);
+    try std.testing.expectEqual(
+        @as(i64, @intCast(@divTrunc(
+            (try @import("zeit").instant(.{ .source = .{ .iso8601 = "2024-01-25T11:20:30Z" } })).timestamp,
+            std.time.ns_per_s,
+        ))),
+        releases.items[0].published_at,
+    );
     try std.testing.expectEqualStrings("codeberg", releases.items[0].provider);
 }

@@ -50,28 +50,6 @@ pub fn fetchReleasesForRepos(self: *Self, allocator: Allocator, repositories: []
     return fetchReleasesMultiRepo(allocator, &client, auth_token, repositories);
 }
 
-pub fn fetchReleasesForReposFiltered(self: *Self, allocator: Allocator, repositories: [][]const u8, token: ?[]const u8, existing_releases: []const Release) !ArrayList(Release) {
-    var latest_date: i64 = 0;
-    for (existing_releases) |release| {
-        if (std.mem.eql(u8, release.provider, "sourcehut")) {
-            const release_time = utils.parseReleaseTimestamp(release.published_at) catch 0;
-            if (release_time > latest_date) {
-                latest_date = release_time;
-            }
-        }
-    }
-
-    const all_releases = try self.fetchReleasesForRepos(allocator, repositories, token);
-    defer {
-        for (all_releases.items) |release| {
-            release.deinit(allocator);
-        }
-        all_releases.deinit();
-    }
-
-    return filterNewReleases(allocator, all_releases.items, latest_date);
-}
-
 pub fn getName(self: *Self) []const u8 {
     _ = self;
     return "sourcehut";

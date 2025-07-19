@@ -495,4 +495,9 @@ test "Age-based release filtering" {
 test {
     std.testing.refAllDecls(@import("timestamp_tests.zig"));
     std.testing.refAllDecls(@import("atom.zig"));
+    std.testing.refAllDecls(@import("utils.zig"));
+    std.testing.refAllDecls(@import("providers/GitHub.zig"));
+    std.testing.refAllDecls(@import("providers/GitLab.zig"));
+    std.testing.refAllDecls(@import("providers/SourceHut.zig"));
+    std.testing.refAllDecls(@import("providers/Codeberg.zig"));
 }

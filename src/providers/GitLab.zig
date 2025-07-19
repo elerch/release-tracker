@@ -320,7 +320,7 @@ test "gitlab release parsing with live data snapshot" {
         const release = Release{
             .repo_name = try allocator.dupe(u8, obj.get("name").?.string),
             .tag_name = try allocator.dupe(u8, obj.get("tag_name").?.string),
-            .published_at = try allocator.dupe(u8, obj.get("created_at").?.string),
+            .published_at = try utils.parseReleaseTimestamp(obj.get("created_at").?.string),
             .html_url = try allocator.dupe(u8, obj.get("_links").?.object.get("self").?.string),
             .description = try allocator.dupe(u8, desc_str),
             .provider = try allocator.dupe(u8, "gitlab"),
@@ -338,6 +338,12 @@ test "gitlab release parsing with live data snapshot" {
     try std.testing.expectEqualStrings("v2.1.0", releases.items[0].tag_name);
     try std.testing.expectEqualStrings("v2.0.0", releases.items[1].tag_name);
     try std.testing.expectEqualStrings("v1.9.0", releases.items[2].tag_name);
-    try std.testing.expectEqualStrings("2024-01-20T14:45:30.123Z", releases.items[0].published_at);
+    try std.testing.expectEqual(
+        @as(i64, @intCast(@divTrunc(
+            (try @import("zeit").instant(.{ .source = .{ .iso8601 = "2024-01-20T14:45:30.123Z" } })).timestamp,
+            std.time.ns_per_s,
+        ))),
+        releases.items[0].published_at,
+    );
     try std.testing.expectEqualStrings("gitlab", releases.items[0].provider);
 }
