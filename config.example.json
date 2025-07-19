@@ -3,7 +3,7 @@
   "gitlab_token": "glpat-your_gitlab_personal_access_token_here",
   "codeberg_token": "your_codeberg_access_token_here",
   "sourcehut": {
-    "token": "AFRfVWoAAAAAAAAGZWxlcmNoMXjCv+4TPV+Qq1CMiUWDAZ/RNZzykaxJVZttjjCa1BU",
+    "token": "your_sourcehut_token_here",
     "repositories": [
       "~sircmpwn/aerc",
       "~emersion/gamja"
