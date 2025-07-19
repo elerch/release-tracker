@@ -103,7 +103,8 @@ pub fn main() !u8 {
     defer if (is_debug) {
         _ = debug_allocator.deinit();
     };
-    const allocator = gpa;
+    var tsa = std.heap.ThreadSafeAllocator{ .child_allocator = gpa };
+    const allocator = tsa.allocator();
 
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
