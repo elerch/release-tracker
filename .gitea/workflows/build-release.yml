@@ -67,11 +67,12 @@ jobs:
         run: "chmod 755 release-tracker"
       - name: Sign
         id: sign
-        uses: https://git.lerch.org/lobo/action-hsm-sign@v1
+        uses: https://git.lerch.org/lobo/action-hsm-sign@v2
         with:
           pin: ${{ secrets.HSM_USER_PIN }}
           files: release-tracker
           public_key: 'https://emil.lerch.org/serverpublic.pem'
+          uhub_control: 'true'
       - name: Output signature URL
         run: echo "Signature URL is ${{ steps.sign.outputs.URL_0 }}"
       - name: Upload Artifact
