@@ -23,6 +23,14 @@ const RepoFetchTask = struct {
     error_msg: ?[]const u8 = null,
 };
 
+const RepoTagsTask = struct {
+    allocator: Allocator,
+    token: []const u8,
+    repo: []const u8,
+    result: ?ArrayList(Release) = null,
+    error_msg: ?[]const u8 = null,
+};
+
 pub fn init(token: []const u8) Self {
     return Self{ .token = token };
 }
@@ -61,12 +69,11 @@ pub fn fetchReleases(self: *Self, allocator: Allocator) !ArrayList(Release) {
     const thread_start_time = std.time.milliTimestamp();
 
     // Create thread pool - use reasonable number of threads for API calls
-    const thread_count = @min(@max(std.Thread.getCpuCount() catch 4, 8), 20);
     var thread_pool: Thread.Pool = undefined;
-    try thread_pool.init(.{ .allocator = allocator, .n_jobs = thread_count });
+    try thread_pool.init(.{ .allocator = allocator });
     defer thread_pool.deinit();
 
-    // Create tasks for each repository
+    // Create tasks for each repository: fetch releases
     var tasks = try allocator.alloc(RepoFetchTask, starred_repos.items.len);
     defer allocator.free(tasks);
 
@@ -81,16 +88,32 @@ pub fn fetchReleases(self: *Self, allocator: Allocator) !ArrayList(Release) {
 
     // Submit all tasks to the thread pool
     var wait_group: Thread.WaitGroup = .{};
-    for (tasks) |*task| {
+    for (tasks) |*task|
         thread_pool.spawnWg(&wait_group, fetchRepoReleasesTask, .{task});
+
+    // Create tasks for each repository: fetch tags
+    var tag_tasks = try allocator.alloc(RepoTagsTask, starred_repos.items.len);
+    defer allocator.free(tag_tasks);
+
+    // Initialize tag tasks
+    for (starred_repos.items, 0..) |repo, i| {
+        tag_tasks[i] = RepoTagsTask{
+            .allocator = allocator,
+            .token = self.token,
+            .repo = repo,
+        };
     }
 
-    // Wait for all tasks to complete
+    // Submit all tag tasks to the thread pool
+    var tag_wait_group: Thread.WaitGroup = .{};
+    for (tag_tasks) |*task|
+        thread_pool.spawnWg(&tag_wait_group, fetchRepoTagsTask, .{task});
+
+    // Wait for all tasks to complete: releases
     thread_pool.waitAndWork(&wait_group);
+    const releases_end_time = std.time.milliTimestamp();
 
-    const thread_end_time = std.time.milliTimestamp();
-
-    // Collect results from all tasks
+    // Collect results from releases
     var successful_repos: usize = 0;
     var failed_repos: usize = 0;
 
@@ -112,11 +135,62 @@ pub fn fetchReleases(self: *Self, allocator: Allocator) !ArrayList(Release) {
         }
     }
 
+    // Wait for all tasks to complete: tags
+    thread_pool.waitAndWork(&tag_wait_group);
+
+    const tags_end_time = std.time.milliTimestamp();
+
+    // Process tag results with filtering
+    var total_tags_found: usize = 0;
+    for (tag_tasks) |*tag_task| {
+        if (tag_task.result) |task_tags| {
+            defer task_tags.deinit();
+            const debug = std.mem.eql(u8, tag_task.repo, "DonIsaac/zlint");
+            if (debug)
+                log.debug("Processing target repo for debugging {s}", .{tag_task.repo});
+
+            total_tags_found += task_tags.items.len;
+            if (debug)
+                log.debug("Found {} tags for {s}", .{ task_tags.items.len, tag_task.repo });
+
+            // Filter out tags that already have corresponding releases
+            // Tags filtered will be deinitted here
+            const added_tags = try addNonReleaseTags(
+                allocator,
+                &releases,
+                task_tags.items,
+            );
+
+            if (debug)
+                log.debug("Added {d} tags out of {d} to release list for {s} ({d} filtered)", .{
+                    added_tags,
+                    task_tags.items.len,
+                    tag_task.repo,
+                    task_tags.items.len - added_tags,
+                });
+        } else if (tag_task.error_msg) |err_msg| {
+            const is_test = @import("builtin").is_test;
+            if (!is_test) {
+                const stderr = std.io.getStdErr().writer();
+                stderr.print("Error fetching tags for {s}: {s}\n", .{ tag_task.repo, err_msg }) catch {};
+            }
+            allocator.free(err_msg);
+        }
+    }
+
+    log.debug("Total tags found across all repositories: {}", .{total_tags_found});
+
     const total_end_time = std.time.milliTimestamp();
-    const thread_duration: u64 = @intCast(thread_end_time - thread_start_time);
+    const releases_duration: u64 = @intCast(releases_end_time - thread_start_time);
+    const tags_duration: u64 = @intCast(tags_end_time - thread_start_time);
     const total_duration: u64 = @intCast(total_end_time - total_start_time);
-    std.log.debug("GitHub: Thread pool completed in {}ms using {} threads ({} successful, {} failed)\n", .{ thread_duration, thread_count, successful_repos, failed_repos });
-    std.log.debug("GitHub: Total time (including pagination): {}ms\n", .{total_duration});
+    log.debug("Fetched releases {}ms, tags {}ms ({} successful, {} failed)\n", .{
+        releases_duration,
+        tags_duration,
+        successful_repos,
+        failed_repos,
+    });
+    log.debug("Total processing time: {}ms\n", .{total_duration});
 
     // Sort releases by date (most recent first)
     std.mem.sort(Release, releases.items, {}, compareReleasesByDate);
@@ -139,6 +213,18 @@ fn fetchRepoReleasesTask(task: *RepoFetchTask) void {
     };
 
     task.result = repo_releases;
+}
+
+fn fetchRepoTagsTask(task: *RepoTagsTask) void {
+    var client = http.Client{ .allocator = task.allocator };
+    defer client.deinit();
+
+    const repo_tags = getRepoTags(task.allocator, &client, task.token, task.repo) catch |err| {
+        task.error_msg = std.fmt.allocPrint(task.allocator, "{s}: {}", .{ task.repo, err }) catch "Unknown error";
+        return;
+    };
+
+    task.result = repo_tags;
 }
 
 fn getStarredRepos(allocator: Allocator, client: *http.Client, token: []const u8) !ArrayList([]const u8) {
@@ -421,68 +507,241 @@ fn getRepoReleases(allocator: Allocator, client: *http.Client, token: []const u8
     return releases;
 }
 
+fn shouldSkipTag(allocator: std.mem.Allocator, tag_name: []const u8) bool {
+    // List of common moving tags that should be filtered out
+    const moving_tags = [_][]const u8{
+        // common "latest commit tags"
+        "latest",
+        "tip",
+        "continuous",
+        "head",
+
+        // common branch tags
+        "main",
+        "master",
+        "trunk",
+        "develop",
+        "development",
+        "dev",
+
+        // common fast moving channel names
+        "nightly",
+        "edge",
+        "canary",
+        "alpha",
+
+        // common slower channels, but without version information
+        // they probably are not something we're interested in
+        "beta",
+        "rc",
+        "release",
+        "snapshot",
+        "unstable",
+        "experimental",
+        "prerelease",
+        "preview",
+    };
+
+    // Check if tag name contains common moving patterns
+    const tag_lower = std.ascii.allocLowerString(allocator, tag_name) catch return false;
+    defer allocator.free(tag_lower);
+
+    for (moving_tags) |moving_tag|
+        if (std.mem.eql(u8, tag_lower, moving_tag))
+            return true;
+
+    // Skip pre-release and development tags
+    if (std.mem.startsWith(u8, tag_lower, "pre-") or
+        std.mem.startsWith(u8, tag_lower, "dev-") or
+        std.mem.startsWith(u8, tag_lower, "test-") or
+        std.mem.startsWith(u8, tag_lower, "debug-"))
+        return true;
+
+    return false;
+}
+
 fn getRepoTags(allocator: Allocator, client: *http.Client, token: []const u8, repo: []const u8) !ArrayList(Release) {
     var tags = ArrayList(Release).init(allocator);
 
-    const url = try std.fmt.allocPrint(allocator, "https://api.github.com/repos/{s}/tags", .{repo});
-    defer allocator.free(url);
+    // Split repo into owner and name
+    const slash_pos = std.mem.indexOf(u8, repo, "/") orelse return error.InvalidRepoFormat;
+    const owner = repo[0..slash_pos];
+    const repo_name = repo[slash_pos + 1 ..];
 
-    const uri = try std.Uri.parse(url);
+    var has_next_page = true;
+    var cursor: ?[]const u8 = null;
 
-    const auth_header = try std.fmt.allocPrint(allocator, "Bearer {s}", .{token});
-    defer allocator.free(auth_header);
+    while (has_next_page) {
+        // Build GraphQL query for tags with commit info
+        const query = if (cursor) |c|
+            try std.fmt.allocPrint(allocator,
+                \\{{"query": "query {{ repository(owner: \"{s}\", name: \"{s}\") {{ refs(refPrefix: \"refs/tags/\", first: 100, after: \"{s}\", orderBy: {{field: TAG_COMMIT_DATE, direction: DESC}}) {{ pageInfo {{ hasNextPage endCursor }} nodes {{ name target {{ ... on Commit {{ message committedDate }} ... on Tag {{ message target {{ ... on Commit {{ message committedDate }} }} }} }} }} }} }} }}"}}
+            , .{ owner, repo_name, c })
+        else
+            try std.fmt.allocPrint(allocator,
+                \\{{"query": "query {{ repository(owner: \"{s}\", name: \"{s}\") {{ refs(refPrefix: \"refs/tags/\", first: 100, orderBy: {{field: TAG_COMMIT_DATE, direction: DESC}}) {{ pageInfo {{ hasNextPage endCursor }} nodes {{ name target {{ ... on Commit {{ message committedDate }} ... on Tag {{ message target {{ ... on Commit {{ message committedDate }} }} }} }} }} }} }} }}"}}
+            , .{ owner, repo_name });
+        defer allocator.free(query);
 
-    var server_header_buffer: [16 * 1024]u8 = undefined;
-    var req = try client.open(.GET, uri, .{
-        .server_header_buffer = &server_header_buffer,
-        .extra_headers = &.{
-            .{ .name = "Authorization", .value = auth_header },
-            .{ .name = "Accept", .value = "application/vnd.github.v3+json" },
-            .{ .name = "User-Agent", .value = "release-tracker/1.0" },
-        },
-    });
-    defer req.deinit();
+        const uri = try std.Uri.parse("https://api.github.com/graphql");
 
-    try req.send();
-    try req.wait();
+        const auth_header = try std.fmt.allocPrint(allocator, "Bearer {s}", .{token});
+        defer allocator.free(auth_header);
 
-    if (req.response.status != .ok) {
-        return error.HttpRequestFailed;
+        var server_header_buffer: [16 * 1024]u8 = undefined;
+        var req = try client.open(.POST, uri, .{
+            .server_header_buffer = &server_header_buffer,
+            .extra_headers = &.{
+                .{ .name = "Authorization", .value = auth_header },
+                .{ .name = "Content-Type", .value = "application/json" },
+                .{ .name = "User-Agent", .value = "release-tracker/1.0" },
+            },
+        });
+        defer req.deinit();
+
+        req.transfer_encoding = .{ .content_length = query.len };
+        try req.send();
+        _ = try req.writeAll(query);
+        try req.finish();
+        try req.wait();
+
+        if (req.response.status != .ok) {
+            // Try to read the error response body for more details
+            const error_body = req.reader().readAllAlloc(allocator, 4096) catch "";
+            defer if (error_body.len > 0) allocator.free(error_body);
+
+            const is_test = @import("builtin").is_test;
+            if (!is_test) {
+                const stderr = std.io.getStdErr().writer();
+                stderr.print("GitHub GraphQL: Failed to fetch tags for {s}: HTTP {} - {s}\n", .{ repo, @intFromEnum(req.response.status), error_body }) catch {};
+            }
+            return error.HttpRequestFailed;
+        }
+
+        const body = try req.reader().readAllAlloc(allocator, 10 * 1024 * 1024);
+        defer allocator.free(body);
+
+        has_next_page = try parseGraphQL(allocator, repo, body, &cursor, &tags);
     }
 
-    const body = try req.reader().readAllAlloc(allocator, 10 * 1024 * 1024);
-    defer allocator.free(body);
+    // Clean up cursor if allocated
+    if (cursor) |c| allocator.free(c);
 
+    return tags;
+}
+
+fn parseGraphQL(allocator: std.mem.Allocator, repo: []const u8, body: []const u8, cursor: *?[]const u8, releases: *ArrayList(Release)) !bool {
     const parsed = try json.parseFromSlice(json.Value, allocator, body, .{});
     defer parsed.deinit();
 
-    const array = parsed.value.array;
-    for (array.items) |item| {
-        const obj = item.object;
-        const commit_obj = obj.get("commit").?.object;
-        const commit_sha = commit_obj.get("sha").?.string;
-        const tag_name = obj.get("name").?.string;
+    // Check for GraphQL errors
+    if (parsed.value.object.get("errors")) |errors| {
+        log.err("GraphQL errors in output for repository {s}: {}", .{ repo, errors });
+        return error.GraphQLError;
+    }
 
-        // Get commit date for this tag
-        const commit_date = getCommitDate(allocator, client, token, repo, commit_sha) catch continue;
+    const data = parsed.value.object.get("data") orelse return error.NoData;
+    const repository = data.object.get("repository") orelse return error.NoRepository;
+    const refs = repository.object.get("refs") orelse return error.NoRefs;
+    const page_info = refs.object.get("pageInfo").?.object;
+    const nodes = refs.object.get("nodes").?.array;
 
-        // Create tag URL (GitHub doesn't provide direct tag URLs, so we construct one)
+    // Update pagination info
+    const has_next_page = page_info.get("hasNextPage").?.bool;
+    if (has_next_page) {
+        const end_cursor = page_info.get("endCursor").?.string;
+        if (cursor.*) |old_cursor| allocator.free(old_cursor);
+        cursor.* = try allocator.dupe(u8, end_cursor);
+    }
+
+    // Process each tag
+    for (nodes.items) |node| {
+        const node_obj = node.object;
+        const tag_name = node_obj.get("name").?.string;
+
+        // Skip common moving tags
+        if (shouldSkipTag(allocator, tag_name)) continue;
+
+        const target = node_obj.get("target").?.object;
+
+        var commit_date: i64 = 0;
+
+        // Handle lightweight tags (point directly to commits)
+        if (target.get("committedDate")) |date| {
+            commit_date = utils.parseReleaseTimestamp(date.string) catch continue;
+        }
+        // Handle annotated tags (point to tag objects which point to commits)
+        else if (target.get("target")) |nested_target| {
+            if (nested_target.object.get("committedDate")) |date| {
+                commit_date = utils.parseReleaseTimestamp(date.string) catch continue;
+            } else {
+                // Skip tags that don't have commit dates
+                continue;
+            }
+        } else {
+            // Skip tags that don't have commit dates
+            continue;
+        }
+
+        // Create tag URL
         const tag_url = try std.fmt.allocPrint(allocator, "https://github.com/{s}/releases/tag/{s}", .{ repo, tag_name });
 
+        var tag_message: []const u8 = "";
+        if (target.get("message")) |m| {
+            if (m == .string) tag_message = m.string;
+        } else if (target.get("target")) |nested_target| {
+            if (nested_target.object.get("message")) |nm| {
+                if (nm == .string) tag_message = nm.string;
+            }
+        }
         const tag_release = Release{
             .repo_name = try allocator.dupe(u8, repo),
-            .tag_name = try allocator.dupe(u8, tag_name), // Store actual tag name
+            .tag_name = try allocator.dupe(u8, tag_name),
             .published_at = commit_date,
             .html_url = tag_url,
-            .description = try allocator.dupe(u8, commit_sha), // Temporarily store commit SHA for comparison
+            .description = try allocator.dupe(u8, tag_message),
             .provider = try allocator.dupe(u8, "github"),
             .is_tag = true,
         };
 
-        try tags.append(tag_release);
+        try releases.append(tag_release);
     }
+    return has_next_page;
+}
 
-    return tags;
+/// Adds non-duplicate tags to the releases array.
+///
+/// This function takes ownership of all Release structs in `all_tags`. For each tag:
+/// - If it's NOT a duplicate of an existing release, it's added to the releases array
+/// - If it IS a duplicate, it's freed immediately using tag.deinit(allocator)
+///
+/// The caller should NOT call deinit on any Release structs in `all_tags` after calling
+/// this function, as ownership has been transferred.
+///
+/// Duplicate detection is based on matching both repo_name and tag_name.
+fn addNonReleaseTags(allocator: std.mem.Allocator, releases: *ArrayList(Release), all_tags: []const Release) !usize {
+    var added: usize = 0;
+    for (all_tags) |tag| {
+        var is_duplicate = false;
+
+        // Check if this tag already exists as a release
+        for (releases.items) |release| {
+            if (std.mem.eql(u8, tag.repo_name, release.repo_name) and
+                std.mem.eql(u8, tag.tag_name, release.tag_name))
+            {
+                is_duplicate = true;
+                break;
+            }
+        }
+
+        if (is_duplicate) {
+            tag.deinit(allocator);
+        } else {
+            try releases.append(tag);
+            added += 1;
+        }
+    }
+    return added;
 }
 
 fn getCommitDate(allocator: Allocator, client: *http.Client, token: []const u8, repo: []const u8, commit_sha: []const u8) !i64 {
@@ -686,4 +945,106 @@ test "github release parsing with live data snapshot" {
         releases.items[0].published_at,
     );
     try std.testing.expectEqualStrings("github", releases.items[0].provider);
+}
+
+test "addNonReleaseTags should not add duplicate tags" {
+    const allocator = std.testing.allocator;
+
+    // Create initial releases array with one existing release
+    var releases = ArrayList(Release).init(allocator);
+    defer {
+        for (releases.items) |release| release.deinit(allocator);
+        releases.deinit();
+    }
+
+    const existing_release = Release{
+        .repo_name = try allocator.dupe(u8, "pkgforge-dev/Cromite-AppImage"),
+        .tag_name = try allocator.dupe(u8, "v138.0.7204.97@2025-07-19_1752905672"),
+        .published_at = 1721404800,
+        .html_url = try allocator.dupe(u8, "https://github.com/pkgforge-dev/Cromite-AppImage/releases/tag/v138.0.7204.97@2025-07-19_1752905672"),
+        .description = try allocator.dupe(u8, ""),
+        .provider = try allocator.dupe(u8, "github"),
+        .is_tag = false,
+    };
+    try releases.append(existing_release);
+
+    // Create a tag that duplicates the existing release (should NOT be added)
+    const duplicate_tag = Release{
+        .repo_name = try allocator.dupe(u8, "pkgforge-dev/Cromite-AppImage"),
+        .tag_name = try allocator.dupe(u8, "v138.0.7204.97@2025-07-19_1752905672"),
+        .published_at = 1721404800,
+        .html_url = try allocator.dupe(u8, "https://github.com/pkgforge-dev/Cromite-AppImage/releases/tag/v138.0.7204.97@2025-07-19_1752905672"),
+        .description = try allocator.dupe(u8, ""),
+        .provider = try allocator.dupe(u8, "github"),
+        .is_tag = true,
+    };
+
+    // Create a tag that should be added (unique)
+    const unique_tag = Release{
+        .repo_name = try allocator.dupe(u8, "pkgforge-dev/Cromite-AppImage"),
+        .tag_name = try allocator.dupe(u8, "v137.0.7204.96@2025-07-18_1752905671"),
+        .published_at = 1721318400,
+        .html_url = try allocator.dupe(u8, "https://github.com/pkgforge-dev/Cromite-AppImage/releases/tag/v137.0.7204.96@2025-07-18_1752905671"),
+        .description = try allocator.dupe(u8, ""),
+        .provider = try allocator.dupe(u8, "github"),
+        .is_tag = true,
+    };
+
+    // Array of tags to process
+    const all_tags = [_]Release{ duplicate_tag, unique_tag };
+
+    // Add non-duplicate tags to releases
+    const added = try addNonReleaseTags(allocator, &releases, &all_tags);
+    try std.testing.expectEqual(@as(usize, 1), added);
+
+    // Should have 2 releases total: 1 original + 1 unique tag (duplicate should be ignored)
+    try std.testing.expectEqual(@as(usize, 2), releases.items.len);
+
+    // Verify the unique tag was added
+    var found_unique = false;
+    for (releases.items) |release| {
+        if (std.mem.eql(u8, release.tag_name, "v137.0.7204.96@2025-07-18_1752905671")) {
+            found_unique = true;
+            try std.testing.expectEqual(true, release.is_tag);
+            break;
+        }
+    }
+    try std.testing.expect(found_unique);
+}
+
+test "parse tag graphQL output" {
+    const result =
+        \\{"data":{"repository":{"refs":{"pageInfo":{"hasNextPage":false,"endCursor":"MzY"},"nodes":[{"name":"v0.7.9","target":{"committedDate":"2025-07-16T06:14:23Z","message":"chore: bump version to v0.7.9"}},{"name":"v0.7.8","target":{"committedDate":"2025-07-15T23:01:11Z","message":"chore: bump version to v0.7.8"}},{"name":"v0.7.7","target":{"committedDate":"2025-04-16T02:32:43Z","message":"chore: bump version to v0.7.0"}},{"name":"v0.7.6","target":{"committedDate":"2025-04-13T18:00:14Z","message":"chore: bump version to v0.7.6"}},{"name":"v0.7.5","target":{"committedDate":"2025-04-12T20:31:13Z","message":"chore: bump version to v0.7.5"}},{"name":"v0.7.4","target":{"committedDate":"2025-04-06T02:08:45Z","message":"chore: bump version to v0.7.4"}},{"name":"v0.3.6","target":{"committedDate":"2024-12-20T07:25:36Z","message":"chore: bump version to v3.4.6"}},{"name":"v0.1.0","target":{"committedDate":"2024-11-16T23:19:14Z","message":"chore: bump version to v0.1.0"}}]}}}}
+    ;
+    const allocator = std.testing.allocator;
+    var cursor: ?[]const u8 = null;
+    var tags = ArrayList(Release).init(allocator);
+    defer {
+        for (tags.items) |tag| {
+            tag.deinit(allocator);
+        }
+        tags.deinit();
+    }
+
+    const has_next_page = try parseGraphQL(allocator, "DonIsaac/zlint", result, &cursor, &tags);
+
+    // Verify parsing results
+    try std.testing.expectEqual(false, has_next_page);
+    try std.testing.expectEqual(@as(usize, 8), tags.items.len);
+
+    // Check first tag (most recent)
+    try std.testing.expectEqualStrings("v0.7.9", tags.items[0].tag_name);
+    try std.testing.expectEqualStrings("DonIsaac/zlint", tags.items[0].repo_name);
+    try std.testing.expectEqualStrings("chore: bump version to v0.7.9", tags.items[0].description);
+    try std.testing.expectEqualStrings("https://github.com/DonIsaac/zlint/releases/tag/v0.7.9", tags.items[0].html_url);
+    try std.testing.expectEqualStrings("github", tags.items[0].provider);
+    try std.testing.expectEqual(true, tags.items[0].is_tag);
+
+    // Check last tag
+    try std.testing.expectEqualStrings("v0.1.0", tags.items[7].tag_name);
+    try std.testing.expectEqualStrings("chore: bump version to v0.1.0", tags.items[7].description);
+
+    // Verify that commit messages are properly extracted
+    try std.testing.expectEqualStrings("chore: bump version to v0.7.8", tags.items[1].description);
+    try std.testing.expectEqualStrings("chore: bump version to v3.4.6", tags.items[6].description); // Note: this one has a typo in the original data
 }
