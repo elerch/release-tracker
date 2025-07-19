@@ -191,7 +191,7 @@ pub fn generateFeed(allocator: Allocator, releases: []const Release) ![]u8 {
         try writer.writeAll(" - ");
         try escapeXml(writer, release.tag_name);
         if (release.is_tag) {
-            try writer.writeAll(" (tag)");
+            try writer.writeAll(":tag");
         }
         try writer.writeAll("</title>\n");
 
@@ -208,8 +208,6 @@ pub fn generateFeed(allocator: Allocator, releases: []const Release) ![]u8 {
             .timestamp = release.published_at * std.time.ns_per_s,
             .timezone = &zeit.utc,
         };
-        // try escapeXml(writer, release.published_at);
-        // try std.testing.expect(std.mem.indexOf(u8, atom_content, "<updated>2024-01-01T00:00:00Z</updated>") != null);
         try published.time().strftime(writer, "%Y-%m-%dT%H:%M:%SZ");
         try writer.writeAll("</updated>\n");
 
