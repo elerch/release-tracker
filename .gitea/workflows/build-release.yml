@@ -70,7 +70,7 @@ jobs:
         uses: https://git.lerch.org/lobo/action-hsm-sign@v1
         with:
           pin: ${{ secrets.HSM_USER_PIN }}
-          files: release-tracker-linux-x86_64
+          files: release-tracker
           public_key: 'https://emil.lerch.org/serverpublic.pem'
       - name: Output signature URL
         run: echo "Signature URL is ${{ steps.sign.outputs.URL_0 }}"
