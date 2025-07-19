@@ -44,7 +44,7 @@ jobs:
       - name: Upload
         uses: actions/upload-artifact@v3
         with:
-          name: release-tracker-linux-x86_64
+          name: release-tracker-x86_64-linux
           path: 'zig-out/bin/release-tracker'
 
       - name: Notify
@@ -62,9 +62,9 @@ jobs:
       - name: Download Artifact
         uses: actions/download-artifact@v3
         with:
-          name: release-tracker-linux-x86_64
+          name: release-tracker-x86_64-linux
       - name: "Make executable actually executable"
-        run: "chmod 755 release-tracker-linux-x86_64"
+        run: "chmod 755 release-tracker"
       - name: Sign
         id: sign
         uses: https://git.lerch.org/lobo/action-hsm-sign@v1
