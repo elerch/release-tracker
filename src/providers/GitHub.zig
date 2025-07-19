@@ -13,6 +13,8 @@ token: []const u8,
 
 const Self = @This();
 
+const log = std.log.scoped(.@"");
+
 const RepoFetchTask = struct {
     allocator: Allocator,
     token: []const u8,
@@ -48,17 +50,13 @@ pub fn fetchReleases(self: *Self, allocator: Allocator) !ArrayList(Release) {
     }
     const starred_end_time = std.time.milliTimestamp();
 
-    if (starred_repos.items.len == 0) {
-        return releases;
-    }
+    if (starred_repos.items.len == 0) return releases;
 
     const starred_duration: u64 = @intCast(starred_end_time - starred_start_time);
-    std.log.debug("GitHub: Found {} starred repositories in {}ms", .{ starred_repos.items.len, starred_duration });
+    log.debug("Found {} starred repositories in {}ms", .{ starred_repos.items.len, starred_duration });
 
     // Check for potentially inaccessible repositories due to enterprise policies
     // try checkForInaccessibleRepos(allocator, &client, self.token, starred_repos.items);
-
-    std.log.debug("GitHub: Processing {} starred repositories with thread pool...", .{starred_repos.items.len});
 
     const thread_start_time = std.time.milliTimestamp();
 
