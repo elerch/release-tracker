@@ -1,0 +1,89 @@
+name: Build and Release
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v4
+      - name: Setup Zig
+        uses: https://github.com/mlugg/setup-zig@v2.0.1
+        with:
+          version: 0.14.1
+      - name: Restore Zig caches
+        uses: https://github.com/Hanaasagi/zig-action-cache@3954aae427f8b05914e08dfd79f15e1f2e435929
+
+      - name: Run tests
+        run: zig build test --verbose --summary all
+
+      - name: Run tests (release mode)
+        run: zig build test -Dtarget=x86_64-linux-musl -Doptimize=ReleaseSafe --verbose
+
+      - name: Build release binary
+        run: |
+          zig build -Dtarget=x86_64-linux-musl -Doptimize=ReleaseSafe --verbose
+
+      - name: Create release archive (linux x86_64)
+        run: |
+          mkdir -p release-tracker-x86_64-linux
+          cp zig-out/bin/release-tracker release-tracker-linux-x86_64-linux/
+          cp config.example.json release-tracker-linux-x86_64-linux/
+          cp README.md release-tracker-linux-x86_64-linux/
+          tar -czf release-tracker-x86_64-linux.tar.gz release-tracker-linux-x86_64-linux/
+
+      - name: Publish release archive
+        run: |
+          curl -s --user ${{ github.actor }}:${{ secrets.PACKAGE_PUSH }} \
+            --upload-file ${{ runner.temp }}/${{ github.sha }}-with-models.tar.gz \
+            https://git.lerch.org/api/packages/lobo/generic/aws-sdk-with-models/${{ github.sha }}/${{ github.sha }}-with-models.tar.gz
+
+      - name: Upload
+        uses: actions/upload-artifact@v3
+        with:
+          name: release-tracker-linux-x86_64
+          path: 'zig-out/bin/relase-tracker'
+
+      - name: Notify
+        uses: https://git.lerch.org/lobo/action-notify-ntfy@v2
+        if: always()
+        with:
+          host: ${{ secrets.NTFY_HOST }}
+          topic: ${{ secrets.NTFY_TOPIC }}
+          user: ${{ secrets.NTFY_USER }}
+          password: ${{ secrets.NTFY_PASSWORD }}
+  sign:
+    runs-on: ubuntu-latest-with-hsm
+    needs: build
+    steps:
+      - name: Download Artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: release-tracker-linux-x86_64
+      - name: "Make executable actually executable"
+        run: "chmod 755 release-tracker-linux-x86_64"
+      - name: Sign
+        id: sign
+        uses: https://git.lerch.org/lobo/action-hsm-sign@v1
+        with:
+          pin: ${{ secrets.HSM_USER_PIN }}
+          files: flexilib
+          public_key: 'https://emil.lerch.org/serverpublic.pem'
+      - name: Output signature URL
+        run: echo "Signature URL is ${{ steps.sign.outputs.URL_0 }}"
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: signature
+          path: ${{ steps.sign.outputs.SIG_0 }}
+      - name: Notify
+        uses: https://git.lerch.org/lobo/action-notify-ntfy@v2
+        if: always()
+        with:
+          host: ${{ secrets.NTFY_HOST }}
+          topic: ${{ secrets.NTFY_TOPIC }}
+          user: ${{ secrets.NTFY_USER }}
+          password: ${{ secrets.NTFY_PASSWORD }}
