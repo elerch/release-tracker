@@ -30,22 +30,22 @@ jobs:
       - name: Create release archive (linux x86_64)
         run: |
           mkdir -p release-tracker-x86_64-linux
-          cp zig-out/bin/release-tracker release-tracker-linux-x86_64-linux/
-          cp config.example.json release-tracker-linux-x86_64-linux/
-          cp README.md release-tracker-linux-x86_64-linux/
-          tar -czf release-tracker-x86_64-linux.tar.gz release-tracker-linux-x86_64-linux/
+          cp zig-out/bin/release-tracker release-tracker-x86_64-linux/
+          cp config.example.json release-tracker-x86_64-linux/
+          cp README.md release-tracker-x86_64-linux/
+          tar -czf release-tracker-x86_64-linux.tar.gz release-tracker-x86_64-linux/
 
       - name: Publish release archive
         run: |
           curl -s --user ${{ github.actor }}:${{ secrets.PACKAGE_PUSH }} \
-            --upload-file ${{ runner.temp }}/${{ github.sha }}-with-models.tar.gz \
-            https://git.lerch.org/api/packages/lobo/generic/aws-sdk-with-models/${{ github.sha }}/${{ github.sha }}-with-models.tar.gz
+            --upload-file release-tracker-x86_64-linux.tar.gz
+            https://git.lerch.org/api/packages/lobo/generic/aws-sdk-with-models/${{ github.sha }}/release-tracker-x86_64-linux.tar.gz
 
       - name: Upload
         uses: actions/upload-artifact@v3
         with:
           name: release-tracker-linux-x86_64
-          path: 'zig-out/bin/relase-tracker'
+          path: 'zig-out/bin/release-tracker'
 
       - name: Notify
         uses: https://git.lerch.org/lobo/action-notify-ntfy@v2
@@ -70,7 +70,7 @@ jobs:
         uses: https://git.lerch.org/lobo/action-hsm-sign@v1
         with:
           pin: ${{ secrets.HSM_USER_PIN }}
-          files: flexilib
+          files: release-tracker-linux-x86_64
           public_key: 'https://emil.lerch.org/serverpublic.pem'
       - name: Output signature URL
         run: echo "Signature URL is ${{ steps.sign.outputs.URL_0 }}"
