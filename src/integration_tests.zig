@@ -6,7 +6,7 @@ const atom = @import("atom.zig");
 const Release = @import("main.zig").Release;
 const GitHub = @import("providers/GitHub.zig");
 const GitLab = @import("providers/GitLab.zig");
-const Codeberg = @import("providers/Codeberg.zig");
+const Forgejo = @import("providers/Forgejo.zig");
 const SourceHut = @import("providers/SourceHut.zig");
 const config = @import("config.zig");
 
@@ -436,24 +436,24 @@ test "GitLab provider integration" {
     }
 }
 
-test "Codeberg provider integration" {
+test "Forgejo provider integration" {
     const allocator = testing.allocator;
 
     // Load config to get token
     const app_config = config.loadConfig(allocator, "config.json") catch |err| {
-        testPrint("Skipping Codeberg test - config not available: {}\n", .{err});
+        testPrint("Skipping Forgejo test - config not available: {}\n", .{err});
         return;
     };
     defer app_config.deinit();
 
     if (app_config.codeberg_token == null) {
-        testPrint("Skipping Codeberg test - no token configured\n", .{});
+        testPrint("Skipping Forgejo test - no token configured\n", .{});
         return;
     }
 
-    var provider = Codeberg.init(app_config.codeberg_token.?);
+    var provider = Forgejo.init("codeberg", "https://codeberg.org", app_config.codeberg_token.?);
     const releases = provider.fetchReleases(allocator) catch |err| {
-        testPrint("Codeberg provider error: {}\n", .{err});
+        testPrint("Forgejo provider error: {}\n", .{err});
         return; // Skip test if provider fails
     };
     defer {
@@ -463,7 +463,7 @@ test "Codeberg provider integration" {
         releases.deinit();
     }
 
-    testPrint("Codeberg: Found {} releases\n", .{releases.items.len});
+    testPrint("Forgejo: Found {} releases\n", .{releases.items.len});
 
     // Verify releases have required fields
     for (releases.items) |release| {

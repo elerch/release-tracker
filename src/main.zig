@@ -6,8 +6,8 @@ const Thread = std.Thread;
 
 const GitHub = @import("providers/GitHub.zig");
 const GitLab = @import("providers/GitLab.zig");
-const Codeberg = @import("providers/Codeberg.zig");
 const SourceHut = @import("providers/SourceHut.zig");
+const ForgejoRegistry = @import("ForgejoRegistry.zig");
 const atom = @import("atom.zig");
 const config = @import("config.zig");
 const zeit = @import("zeit");
@@ -136,7 +136,7 @@ pub fn main() !u8 {
     // Initialize providers with their tokens (need to persist for the lifetime of the program)
     var github_provider: ?GitHub = null;
     var gitlab_provider: ?GitLab = null;
-    var codeberg_provider: ?Codeberg = null;
+    var forgejo_registry: ?ForgejoRegistry = null;
     var sourcehut_provider: ?SourceHut = null;
 
     if (app_config.github_token) |token| {
@@ -147,13 +147,30 @@ pub fn main() !u8 {
         gitlab_provider = GitLab.init(token);
         try providers.append(gitlab_provider.?.provider());
     }
-    if (app_config.codeberg_token) |token| {
-        codeberg_provider = Codeberg.init(token);
-        try providers.append(codeberg_provider.?.provider());
+
+    // Handle Forgejo instances (including legacy codeberg_token)
+    forgejo_registry = ForgejoRegistry.init(allocator, &app_config) catch |err| {
+        const stderr = std.io.getStdErr().writer();
+        stderr.print("Error initializing Forgejo registry: {}\n", .{err}) catch {};
+        return err;
+    };
+    if (forgejo_registry) |*registry| {
+        const forgejo_providers = try registry.providers();
+        defer registry.deinitProviders(forgejo_providers);
+
+        for (forgejo_providers) |provider| {
+            try providers.append(provider);
+        }
     }
+
     if (app_config.sourcehut) |sh_config| if (sh_config.repositories.len > 0 and sh_config.token != null) {
         sourcehut_provider = SourceHut.init(sh_config.token.?, sh_config.repositories);
         try providers.append(sourcehut_provider.?.provider());
+    };
+
+    // Cleanup forgejo registry when done
+    defer if (forgejo_registry) |*registry| {
+        registry.deinit();
     };
 
     // Fetch releases from all providers concurrently using thread pool
@@ -567,5 +584,6 @@ test {
     std.testing.refAllDecls(@import("providers/GitHub.zig"));
     std.testing.refAllDecls(@import("providers/GitLab.zig"));
     std.testing.refAllDecls(@import("providers/SourceHut.zig"));
-    std.testing.refAllDecls(@import("providers/Codeberg.zig"));
+    std.testing.refAllDecls(@import("providers/Forgejo.zig"));
+    std.testing.refAllDecls(@import("ForgejoRegistry.zig"));
 }

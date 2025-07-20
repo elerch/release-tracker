@@ -2,6 +2,31 @@ const std = @import("std");
 const json = std.json;
 const Allocator = std.mem.Allocator;
 
+pub const ForgejoInstance = struct {
+    name: []const u8,
+    base_url: []const u8,
+    token: []const u8,
+    allocator: Allocator,
+
+    pub fn deinit(self: *const ForgejoInstance) void {
+        self.allocator.free(self.name);
+        self.allocator.free(self.base_url);
+        self.allocator.free(self.token);
+    }
+};
+
+pub const ForgejoConfig = struct {
+    instances: []ForgejoInstance,
+    allocator: Allocator,
+
+    pub fn deinit(self: *const ForgejoConfig) void {
+        for (self.instances) |*instance| {
+            instance.deinit();
+        }
+        self.allocator.free(self.instances);
+    }
+};
+
 pub const SourceHutConfig = struct {
     token: ?[]const u8 = null,
     repositories: [][]const u8,
@@ -19,7 +44,8 @@ pub const SourceHutConfig = struct {
 pub const Config = struct {
     github_token: ?[]const u8 = null,
     gitlab_token: ?[]const u8 = null,
-    codeberg_token: ?[]const u8 = null,
+    codeberg_token: ?[]const u8 = null, // Legacy support
+    forgejo: ?ForgejoConfig = null,
     sourcehut: ?SourceHutConfig = null,
     allocator: Allocator,
 
@@ -27,6 +53,7 @@ pub const Config = struct {
         if (self.github_token) |token| self.allocator.free(token);
         if (self.gitlab_token) |token| self.allocator.free(token);
         if (self.codeberg_token) |token| self.allocator.free(token);
+        if (self.forgejo) |*forgejo_config| forgejo_config.deinit();
         if (self.sourcehut) |*sh_config| sh_config.deinit();
     }
 };
@@ -72,6 +99,28 @@ pub fn parseConfigFromJson(allocator: Allocator, json_content: []const u8) !Conf
         };
     }
 
+    // Parse forgejo instances
+    var forgejo_config: ?ForgejoConfig = null;
+    if (root.get("forgejo")) |forgejo_obj| {
+        const forgejo_array = forgejo_obj.array;
+        var instances = try allocator.alloc(ForgejoInstance, forgejo_array.items.len);
+
+        for (forgejo_array.items, 0..) |instance_obj, i| {
+            const instance = instance_obj.object;
+            instances[i] = ForgejoInstance{
+                .name = try allocator.dupe(u8, instance.get("name").?.string),
+                .base_url = try allocator.dupe(u8, instance.get("base_url").?.string),
+                .token = try allocator.dupe(u8, instance.get("token").?.string),
+                .allocator = allocator,
+            };
+        }
+
+        forgejo_config = ForgejoConfig{
+            .instances = instances,
+            .allocator = allocator,
+        };
+    }
+
     return Config{
         .github_token = if (root.get("github_token")) |v| switch (v) {
             .string => |s| if (s.len > 0) try allocator.dupe(u8, s) else null,
@@ -88,6 +137,7 @@ pub fn parseConfigFromJson(allocator: Allocator, json_content: []const u8) !Conf
             .null => null,
             else => null,
         } else null,
+        .forgejo = forgejo_config,
         .sourcehut = sourcehut_config,
         .allocator = allocator,
     };

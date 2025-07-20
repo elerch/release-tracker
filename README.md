@@ -37,7 +37,13 @@ Create a `config.json` file with your API tokens:
 {
   "github_token": "your_github_token",
   "gitlab_token": "your_gitlab_token",
-  "codeberg_token": "your_codeberg_token",
+  "forgejo": [
+    {
+      "name": "codeberg",
+      "base_url": "https://codeberg.org",
+      "token": "your_codeberg_access_token_here"
+    }
+  ],
   "sourcehut": {
     "repositories": [
       "~sircmpwn/aerc",
@@ -52,7 +58,7 @@ Create a `config.json` file with your API tokens:
 
 - **GitHub**: Create a Personal Access Token with and `user:read` scope. Classic is preferred (see note)
 - **GitLab**: Create a Personal Access Token with `read_api` scope
-- **Codeberg**: Create an Access Token in your account settings
+- **Codeberg**: Create an Access Token in your account settings. read:repository and read:user
 - **SourceHut**: No token required for public repositories. Specify repositories to track in the configuration.
 
 Note on GitHub PATs. Some GitHub orgs will place additional restrictions on

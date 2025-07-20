@@ -4,7 +4,7 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const integration = b.option(bool, "integration", "Run integration tests") orelse false;
-    const provider = b.option([]const u8, "provider", "Test specific provider (github, gitlab, codeberg, sourcehut)");
+    const provider = b.option([]const u8, "provider", "Test specific provider (github, gitlab, forgejo, sourcehut)");
     const test_debug = b.option(bool, "test-debug", "Enable debug output in tests") orelse false;
 
     // Add Zeit dependency
@@ -79,7 +79,7 @@ pub fn build(b: *std.Build) void {
     // Individual provider test steps
     const github_step = b.step("test-github", "Test GitHub provider only");
     const gitlab_step = b.step("test-gitlab", "Test GitLab provider only");
-    const codeberg_step = b.step("test-codeberg", "Test Codeberg provider only");
+    const forgejo_step = b.step("test-forgejo", "Test Forgejo provider only");
     const sourcehut_step = b.step("test-sourcehut", "Test SourceHut provider only");
 
     const github_tests = b.addTest(.{
@@ -106,17 +106,17 @@ pub fn build(b: *std.Build) void {
     gitlab_test_debug_option.addOption(bool, "test_debug", test_debug);
     gitlab_tests.root_module.addOptions("build_options", gitlab_test_debug_option);
 
-    const codeberg_tests = b.addTest(.{
-        .name = "codeberg-tests",
+    const forgejo_tests = b.addTest(.{
+        .name = "forgejo-tests",
         .root_source_file = b.path("src/integration_tests.zig"),
         .target = target,
         .optimize = optimize,
-        .filters = &[_][]const u8{"Codeberg provider"},
+        .filters = &[_][]const u8{"Forgejo provider"},
     });
-    codeberg_tests.root_module.addImport("zeit", zeit_dep.module("zeit"));
-    const codeberg_test_debug_option = b.addOptions();
-    codeberg_test_debug_option.addOption(bool, "test_debug", test_debug);
-    codeberg_tests.root_module.addOptions("build_options", codeberg_test_debug_option);
+    forgejo_tests.root_module.addImport("zeit", zeit_dep.module("zeit"));
+    const forgejo_test_debug_option = b.addOptions();
+    forgejo_test_debug_option.addOption(bool, "test_debug", test_debug);
+    forgejo_tests.root_module.addOptions("build_options", forgejo_test_debug_option);
 
     const sourcehut_tests = b.addTest(.{
         .name = "sourcehut-tests",
@@ -132,6 +132,6 @@ pub fn build(b: *std.Build) void {
 
     github_step.dependOn(&b.addRunArtifact(github_tests).step);
     gitlab_step.dependOn(&b.addRunArtifact(gitlab_tests).step);
-    codeberg_step.dependOn(&b.addRunArtifact(codeberg_tests).step);
+    forgejo_step.dependOn(&b.addRunArtifact(forgejo_tests).step);
     sourcehut_step.dependOn(&b.addRunArtifact(sourcehut_tests).step);
 }

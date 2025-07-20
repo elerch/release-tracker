@@ -9,12 +9,18 @@ const tag_filter = @import("../tag_filter.zig");
 const Release = @import("../main.zig").Release;
 const Provider = @import("../Provider.zig");
 
+name: []const u8,
+base_url: []const u8,
 token: []const u8,
 
 const Self = @This();
 
-pub fn init(token: []const u8) Self {
-    return Self{ .token = token };
+pub fn init(name: []const u8, base_url: []const u8, token: []const u8) Self {
+    return Self{
+        .name = name,
+        .base_url = base_url,
+        .token = token,
+    };
 }
 
 pub fn provider(self: *Self) Provider {
@@ -27,8 +33,8 @@ pub fn fetchReleases(self: *Self, allocator: Allocator) !ArrayList(Release) {
 
     var releases = ArrayList(Release).init(allocator);
 
-    // Get starred repositories (Codeberg uses Gitea API)
-    const starred_repos = try getStarredRepos(allocator, &client, self.token);
+    // Get starred repositories (uses Forgejo/Gitea API)
+    const starred_repos = try getStarredRepos(allocator, &client, self.base_url, self.token);
     defer {
         for (starred_repos.items) |repo| {
             allocator.free(repo);
@@ -39,9 +45,9 @@ pub fn fetchReleases(self: *Self, allocator: Allocator) !ArrayList(Release) {
     // Get releases for each repo
     for (starred_repos.items) |repo| {
         // TODO: Investigate the tags/releases situation similar to GitHub
-        const repo_releases = getRepoReleases(allocator, &client, self.token, repo) catch |err| {
+        const repo_releases = getRepoReleases(allocator, &client, self.base_url, self.token, self.name, repo) catch |err| {
             const stderr = std.io.getStdErr().writer();
-            stderr.print("Error fetching Codeberg releases for {s}: {}\n", .{ repo, err }) catch {};
+            stderr.print("Error fetching {s} releases for {s}: {}\n", .{ self.name, repo, err }) catch {};
             continue;
         };
         defer repo_releases.deinit();
@@ -56,11 +62,10 @@ pub fn fetchReleases(self: *Self, allocator: Allocator) !ArrayList(Release) {
 }
 
 pub fn getName(self: *Self) []const u8 {
-    _ = self;
-    return "codeberg";
+    return self.name;
 }
 
-fn getStarredRepos(allocator: Allocator, client: *http.Client, token: []const u8) !ArrayList([]const u8) {
+fn getStarredRepos(allocator: Allocator, client: *http.Client, base_url: []const u8, token: []const u8) !ArrayList([]const u8) {
     var repos = ArrayList([]const u8).init(allocator);
     errdefer {
         // Clean up any allocated repo names if we fail
@@ -78,7 +83,7 @@ fn getStarredRepos(allocator: Allocator, client: *http.Client, token: []const u8
     const per_page: u32 = 100;
 
     while (true) {
-        const url = try std.fmt.allocPrint(allocator, "https://codeberg.org/api/v1/user/starred?limit={d}&page={d}", .{ per_page, page });
+        const url = try std.fmt.allocPrint(allocator, "{s}/api/v1/user/starred?limit={d}&page={d}", .{ base_url, per_page, page });
         defer allocator.free(url);
 
         const uri = try std.Uri.parse(url);
@@ -99,15 +104,15 @@ fn getStarredRepos(allocator: Allocator, client: *http.Client, token: []const u8
         if (req.response.status != .ok) {
             if (req.response.status == .unauthorized) {
                 const stderr = std.io.getStdErr().writer();
-                stderr.print("Codeberg API: Unauthorized - check your token and scopes\n", .{}) catch {};
+                stderr.print("Forgejo API: Unauthorized - check your token and scopes\n", .{}) catch {};
                 return error.Unauthorized;
             } else if (req.response.status == .forbidden) {
                 const stderr = std.io.getStdErr().writer();
-                stderr.print("Codeberg API: Forbidden - token may lack required scopes (read:repository)\n", .{}) catch {};
+                stderr.print("Forgejo API: Forbidden - token may lack required scopes (read:repository)\n", .{}) catch {};
                 return error.Forbidden;
             }
             const stderr = std.io.getStdErr().writer();
-            stderr.print("Codeberg API request failed with status: {}\n", .{req.response.status}) catch {};
+            stderr.print("Forgejo API request failed with status: {}\n", .{req.response.status}) catch {};
             return error.HttpRequestFailed;
         }
 
@@ -116,7 +121,7 @@ fn getStarredRepos(allocator: Allocator, client: *http.Client, token: []const u8
 
         const parsed = json.parseFromSlice(json.Value, allocator, body, .{}) catch |err| {
             const stderr = std.io.getStdErr().writer();
-            stderr.print("Error parsing Codeberg starred repos JSON (page {d}): {}\n", .{ page, err }) catch {};
+            stderr.print("Error parsing Forgejo starred repos JSON (page {d}): {}\n", .{ page, err }) catch {};
             return error.JsonParseError;
         };
         defer parsed.deinit();
@@ -152,7 +157,7 @@ fn getStarredRepos(allocator: Allocator, client: *http.Client, token: []const u8
     return repos;
 }
 
-fn getRepoReleases(allocator: Allocator, client: *http.Client, token: []const u8, repo: []const u8) !ArrayList(Release) {
+fn getRepoReleases(allocator: Allocator, client: *http.Client, base_url: []const u8, token: []const u8, provider_name: []const u8, repo: []const u8) !ArrayList(Release) {
     var releases = ArrayList(Release).init(allocator);
     errdefer {
         // Clean up any allocated releases if we fail
@@ -162,7 +167,7 @@ fn getRepoReleases(allocator: Allocator, client: *http.Client, token: []const u8
         releases.deinit();
     }
 
-    const url = try std.fmt.allocPrint(allocator, "https://codeberg.org/api/v1/repos/{s}/releases", .{repo});
+    const url = try std.fmt.allocPrint(allocator, "{s}/api/v1/repos/{s}/releases", .{ base_url, repo });
     defer allocator.free(url);
 
     const uri = try std.Uri.parse(url);
@@ -186,19 +191,19 @@ fn getRepoReleases(allocator: Allocator, client: *http.Client, token: []const u8
     if (req.response.status != .ok) {
         if (req.response.status == .unauthorized) {
             const stderr = std.io.getStdErr().writer();
-            stderr.print("Codeberg API: Unauthorized for repo {s} - check your token and scopes\n", .{repo}) catch {};
+            stderr.print("Forgejo API: Unauthorized for repo {s} - check your token and scopes\n", .{repo}) catch {};
             return error.Unauthorized;
         } else if (req.response.status == .forbidden) {
             const stderr = std.io.getStdErr().writer();
-            stderr.print("Codeberg API: Forbidden for repo {s} - token may lack required scopes\n", .{repo}) catch {};
+            stderr.print("Forgejo API: Forbidden for repo {s} - token may lack required scopes\n", .{repo}) catch {};
             return error.Forbidden;
         } else if (req.response.status == .not_found) {
             const stderr = std.io.getStdErr().writer();
-            stderr.print("Codeberg API: Repository {s} not found or no releases\n", .{repo}) catch {};
+            stderr.print("Forgejo API: Repository {s} not found or no releases\n", .{repo}) catch {};
             return error.NotFound;
         }
         const stderr = std.io.getStdErr().writer();
-        stderr.print("Codeberg API request failed for repo {s} with status: {}\n", .{ repo, req.response.status }) catch {};
+        stderr.print("Forgejo API request failed for repo {s} with status: {}\n", .{ repo, req.response.status }) catch {};
         return error.HttpRequestFailed;
     }
 
@@ -207,7 +212,7 @@ fn getRepoReleases(allocator: Allocator, client: *http.Client, token: []const u8
 
     const parsed = json.parseFromSlice(json.Value, allocator, body, .{}) catch |err| {
         const stderr = std.io.getStdErr().writer();
-        stderr.print("Error parsing Codeberg releases JSON for {s}: {}\n", .{ repo, err }) catch {};
+        stderr.print("Error parsing Forgejo releases JSON for {s}: {}\n", .{ repo, err }) catch {};
         return error.JsonParseError;
     };
     defer parsed.deinit();
@@ -247,7 +252,7 @@ fn getRepoReleases(allocator: Allocator, client: *http.Client, token: []const u8
             .published_at = try utils.parseReleaseTimestamp(published_at_value.string),
             .html_url = try allocator.dupe(u8, html_url_value.string),
             .description = try allocator.dupe(u8, body_str),
-            .provider = try allocator.dupe(u8, "codeberg"),
+            .provider = try allocator.dupe(u8, provider_name),
             .is_tag = false,
         };
 
@@ -264,15 +269,15 @@ fn getRepoReleases(allocator: Allocator, client: *http.Client, token: []const u8
     return releases;
 }
 
-test "codeberg provider name" {
+test "forgejo provider name" {
     const allocator = std.testing.allocator;
     _ = allocator;
 
-    var codeberg_provider = init("dummy_token");
-    try std.testing.expectEqualStrings("codeberg", codeberg_provider.getName());
+    var forgejo_provider = init("codeberg", "https://codeberg.org", "dummy_token");
+    try std.testing.expectEqualStrings("codeberg", forgejo_provider.getName());
 }
 
-test "codeberg release parsing with live data snapshot" {
+test "forgejo release parsing with live data snapshot" {
     const allocator = std.testing.allocator;
 
     // Sample Codeberg API response for releases (captured from real API)
@@ -326,7 +331,7 @@ test "codeberg release parsing with live data snapshot" {
             .published_at = try utils.parseReleaseTimestamp(published_at_value.string),
             .html_url = try allocator.dupe(u8, html_url_value.string),
             .description = try allocator.dupe(u8, body_str),
-            .provider = try allocator.dupe(u8, "codeberg"),
+            .provider = try allocator.dupe(u8, "test-forgejo"),
             .is_tag = false,
         };
 
@@ -348,13 +353,13 @@ test "codeberg release parsing with live data snapshot" {
         ))),
         releases.items[0].published_at,
     );
-    try std.testing.expectEqualStrings("codeberg", releases.items[0].provider);
+    try std.testing.expectEqualStrings("test-forgejo", releases.items[0].provider);
 }
 
-test "Codeberg tag filtering" {
+test "Forgejo tag filtering" {
     const allocator = std.testing.allocator;
 
-    // Test that Codeberg now uses the same filtering as other providers
+    // Test that Forgejo now uses the same filtering as other providers
     const problematic_tags = [_][]const u8{
         "nightly", "prerelease", "latest", "edge", "canary", "dev-branch",
     };
