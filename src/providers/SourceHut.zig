@@ -4,6 +4,7 @@ const json = std.json;
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const utils = @import("../utils.zig");
+const tag_filter = @import("../tag_filter.zig");
 
 const Release = @import("../main.zig").Release;
 const Provider = @import("../Provider.zig");
@@ -127,6 +128,11 @@ fn fetchReleasesMultiRepo(allocator: Allocator, client: *http.Client, token: []c
             commit_dates.items[i]
         else
             "1970-01-01T00:00:00Z";
+
+        // Skip problematic tags
+        if (tag_filter.shouldSkipTag(allocator, tag_data.tag_name)) {
+            continue;
+        }
 
         // TODO: Investigate annotated tags as the description here
         const release = Release{
@@ -599,4 +605,27 @@ test "sourcehut provider" {
     }
 
     try std.testing.expectEqualStrings("sourcehut", sourcehut_provider.getName());
+}
+
+test "SourceHut tag filtering" {
+    const allocator = std.testing.allocator;
+
+    // Test that SourceHut now uses the same filtering as other providers
+    const problematic_tags = [_][]const u8{
+        "nightly", "prerelease", "latest", "edge", "canary", "dev-branch",
+    };
+
+    for (problematic_tags) |tag| {
+        try std.testing.expect(tag_filter.shouldSkipTag(allocator, tag));
+    }
+
+    // Test that valid tags are not filtered
+    const valid_tags = [_][]const u8{
+        "v1.0.0", "v2.1.3-stable",
+        // Note: v1.0.0-alpha.1 is now filtered to avoid duplicates
+    };
+
+    for (valid_tags) |tag| {
+        try std.testing.expect(!tag_filter.shouldSkipTag(allocator, tag));
+    }
 }

@@ -5,6 +5,7 @@ const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const Thread = std.Thread;
 const utils = @import("../utils.zig");
+const tag_filter = @import("../tag_filter.zig");
 
 const Release = @import("../main.zig").Release;
 const Provider = @import("../Provider.zig");
@@ -488,6 +489,10 @@ fn getRepoReleases(allocator: Allocator, client: *http.Client, token: []const u8
     for (array.items) |item| {
         const obj = item.object;
 
+        // Track prerelease and draft status but don't filter yet
+        const is_prerelease = if (obj.get("prerelease")) |prerelease| prerelease.bool else false;
+        const is_draft = if (obj.get("draft")) |draft| draft.bool else false;
+
         const body_value = obj.get("body") orelse json.Value{ .string = "" };
         const body_str = if (body_value == .string) body_value.string else "";
 
@@ -499,6 +504,7 @@ fn getRepoReleases(allocator: Allocator, client: *http.Client, token: []const u8
             .description = try allocator.dupe(u8, body_str),
             .provider = try allocator.dupe(u8, "github"),
             .is_tag = false,
+            .is_prerelease = is_prerelease or is_draft, // Mark as prerelease if either flag is true
         };
 
         try releases.append(release);
@@ -507,57 +513,9 @@ fn getRepoReleases(allocator: Allocator, client: *http.Client, token: []const u8
     return releases;
 }
 
-fn shouldSkipTag(allocator: std.mem.Allocator, tag_name: []const u8) bool {
-    // List of common moving tags that should be filtered out
-    const moving_tags = [_][]const u8{
-        // common "latest commit tags"
-        "latest",
-        "tip",
-        "continuous",
-        "head",
-
-        // common branch tags
-        "main",
-        "master",
-        "trunk",
-        "develop",
-        "development",
-        "dev",
-
-        // common fast moving channel names
-        "nightly",
-        "edge",
-        "canary",
-        "alpha",
-
-        // common slower channels, but without version information
-        // they probably are not something we're interested in
-        "beta",
-        "rc",
-        "release",
-        "snapshot",
-        "unstable",
-        "experimental",
-        "prerelease",
-        "preview",
-    };
-
-    // Check if tag name contains common moving patterns
-    const tag_lower = std.ascii.allocLowerString(allocator, tag_name) catch return false;
-    defer allocator.free(tag_lower);
-
-    for (moving_tags) |moving_tag|
-        if (std.mem.eql(u8, tag_lower, moving_tag))
-            return true;
-
-    // Skip pre-release and development tags
-    if (std.mem.startsWith(u8, tag_lower, "pre-") or
-        std.mem.startsWith(u8, tag_lower, "dev-") or
-        std.mem.startsWith(u8, tag_lower, "test-") or
-        std.mem.startsWith(u8, tag_lower, "debug-"))
-        return true;
-
-    return false;
+/// Wrapper function for backward compatibility and testing
+pub fn shouldSkipTag(allocator: std.mem.Allocator, tag_name: []const u8) bool {
+    return tag_filter.shouldSkipTag(allocator, tag_name);
 }
 
 fn getRepoTags(allocator: Allocator, client: *http.Client, token: []const u8, repo: []const u8) !ArrayList(Release) {
@@ -660,7 +618,7 @@ fn parseGraphQL(allocator: std.mem.Allocator, repo: []const u8, body: []const u8
         const tag_name = node_obj.get("name").?.string;
 
         // Skip common moving tags
-        if (shouldSkipTag(allocator, tag_name)) continue;
+        if (tag_filter.shouldSkipTag(allocator, tag_name)) continue;
 
         const target = node_obj.get("target").?.object;
 
@@ -1010,6 +968,114 @@ test "addNonReleaseTags should not add duplicate tags" {
         }
     }
     try std.testing.expect(found_unique);
+}
+
+test "GitHub prerelease and draft filtering" {
+    const allocator = std.testing.allocator;
+
+    // Test shouldSkipRelease function
+    try std.testing.expect(tag_filter.shouldSkipRelease(true, false)); // prerelease
+    try std.testing.expect(tag_filter.shouldSkipRelease(false, true)); // draft
+    try std.testing.expect(tag_filter.shouldSkipRelease(true, true)); // both
+    try std.testing.expect(!tag_filter.shouldSkipRelease(false, false)); // normal release
+
+    // Mock GitHub API response with prerelease and draft fields
+    const github_api_response =
+        \\[
+        \\  {
+        \\    "tag_name": "v1.0.0",
+        \\    "published_at": "2024-01-01T00:00:00Z",
+        \\    "html_url": "https://github.com/test/repo/releases/tag/v1.0.0",
+        \\    "body": "Stable release",
+        \\    "prerelease": false,
+        \\    "draft": false
+        \\  },
+        \\  {
+        \\    "tag_name": "v1.1.0-alpha",
+        \\    "published_at": "2024-01-02T00:00:00Z",
+        \\    "html_url": "https://github.com/test/repo/releases/tag/v1.1.0-alpha",
+        \\    "body": "Alpha release",
+        \\    "prerelease": true,
+        \\    "draft": false
+        \\  },
+        \\  {
+        \\    "tag_name": "v1.2.0-draft",
+        \\    "published_at": "2024-01-03T00:00:00Z",
+        \\    "html_url": "https://github.com/test/repo/releases/tag/v1.2.0-draft",
+        \\    "body": "Draft release",
+        \\    "prerelease": false,
+        \\    "draft": true
+        \\  }
+        \\]
+    ;
+
+    // Parse the JSON to verify structure
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, github_api_response, .{});
+    defer parsed.deinit();
+
+    const array = parsed.value.array;
+    try std.testing.expectEqual(@as(usize, 3), array.items.len);
+
+    // Verify the prerelease and draft fields are present and correct
+    const stable_release = array.items[0].object;
+    try std.testing.expectEqual(false, stable_release.get("prerelease").?.bool);
+    try std.testing.expectEqual(false, stable_release.get("draft").?.bool);
+
+    const prerelease_item = array.items[1].object;
+    try std.testing.expectEqual(true, prerelease_item.get("prerelease").?.bool);
+    try std.testing.expectEqual(false, prerelease_item.get("draft").?.bool);
+
+    const draft_item = array.items[2].object;
+    try std.testing.expectEqual(false, draft_item.get("prerelease").?.bool);
+    try std.testing.expectEqual(true, draft_item.get("draft").?.bool);
+}
+
+test "shouldSkipTag comprehensive filtering tests" {
+    const allocator = std.testing.allocator;
+
+    // Test exact matches for moving tags
+    const moving_tags = [_][]const u8{
+        "latest",  "tip",         "continuous", "head",     "main",     "master",       "trunk",
+        "develop", "development", "dev",        "nightly",  "edge",     "canary",       "alpha",
+        "beta",    "rc",          "release",    "snapshot", "unstable", "experimental", "prerelease",
+        "preview",
+    };
+
+    for (moving_tags) |tag| {
+        try std.testing.expect(shouldSkipTag(allocator, tag));
+
+        // Test case insensitive matching
+        const upper_tag = try std.ascii.allocUpperString(allocator, tag);
+        defer allocator.free(upper_tag);
+        try std.testing.expect(shouldSkipTag(allocator, upper_tag));
+    }
+
+    // Test prefix patterns
+    const prefix_patterns = [_][]const u8{
+        "pre-release", "pre-1.0.0", "dev-branch",    "dev-feature",
+        "test-build",  "test-123",  "debug-version", "debug-info",
+    };
+
+    for (prefix_patterns) |tag| {
+        try std.testing.expect(shouldSkipTag(allocator, tag));
+    }
+
+    // Test valid version tags that should NOT be filtered
+    const valid_tags = [_][]const u8{
+        "v1.0.0",        "v2.1.3",        "1.0.0",      "2.1.3-stable", "v1.0.0-final",
+        "release-1.0.0", "stable-v1.0.0", "v1.0.0-lts",
+        "2023.1.0",
+        // Note: Semantic versioning prerelease tags are now filtered to avoid duplicates
+    };
+
+    for (valid_tags) |tag| {
+        try std.testing.expect(!shouldSkipTag(allocator, tag));
+    }
+
+    // Test edge cases
+    try std.testing.expect(!shouldSkipTag(allocator, "")); // Empty string
+    try std.testing.expect(!shouldSkipTag(allocator, "v1.0.0+build.1")); // Build metadata
+    try std.testing.expect(!shouldSkipTag(allocator, "nightly-build-v1.0.0")); // Contains "nightly" but has version
 }
 
 test "parse tag graphQL output" {

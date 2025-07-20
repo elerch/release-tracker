@@ -67,6 +67,7 @@ pub const Release = struct {
     description: []const u8,
     provider: []const u8,
     is_tag: bool = false,
+    is_prerelease: bool = false, // Track if this is a prerelease/draft
 
     pub fn deinit(self: Release, allocator: Allocator) void {
         allocator.free(self.repo_name);
@@ -205,8 +206,25 @@ pub fn main() !u8 {
     // Sort all releases by published date (most recent first)
     std.mem.sort(Release, all_releases.items, {}, utils.compareReleasesByDate);
 
+    // Filter out prereleases after duplicate detection is complete
+    // Exception: Keep git-style version prereleases (like kraftkit)
+    var filtered_releases = std.ArrayList(Release).init(allocator);
+    defer filtered_releases.deinit();
+
+    for (all_releases.items) |release| {
+        if (!release.is_prerelease) {
+            try filtered_releases.append(release);
+        } else {
+            // Check if this is a git-style version (e.g., v1.2.3-123-g1234567)
+            // These should be included even if marked as prerelease
+            if (isGitStyleVersion(release.tag_name)) {
+                try filtered_releases.append(release);
+            }
+        }
+    }
+
     // Generate Atom feed from filtered releases
-    const atom_content = try atom.generateFeed(allocator, all_releases.items);
+    const atom_content = try atom.generateFeed(allocator, filtered_releases.items);
     defer allocator.free(atom_content);
 
     // Write to output file
@@ -218,10 +236,59 @@ pub fn main() !u8 {
     _ = checkFileSizeAndWarn(atom_content.len);
 
     // Log to stderr for user feedback
-    printInfo("Total releases in feed: {} of {} total in last {} days\n", .{ all_releases.items.len, original_count, @divTrunc(RELEASE_AGE_LIMIT_SECONDS, std.time.s_per_day) });
+    printInfo("Total releases in feed: {} of {} total in last {} days\n", .{ filtered_releases.items.len, original_count, @divTrunc(RELEASE_AGE_LIMIT_SECONDS, std.time.s_per_day) });
     printInfo("Updated feed written to: {s}\n", .{output_file});
 
     return 0;
+}
+
+/// Check if a tag contains git-style version pattern like v1.2.3-123-g1234567
+fn isGitStyleVersion(tag_name: []const u8) bool {
+    // Convert to lowercase for comparison
+    var tag_lower_buf: [256]u8 = undefined;
+    if (tag_name.len >= tag_lower_buf.len) return false;
+
+    const tag_lower = std.ascii.lowerString(tag_lower_buf[0..tag_name.len], tag_name);
+
+    // Look for pattern: -number-g followed by hex characters
+    var i: usize = 0;
+    while (i < tag_lower.len) {
+        if (tag_lower[i] == '-') {
+            // Found a dash, check if followed by digits
+            var j = i + 1;
+            var has_digits = false;
+
+            // Skip digits
+            while (j < tag_lower.len and tag_lower[j] >= '0' and tag_lower[j] <= '9') {
+                has_digits = true;
+                j += 1;
+            }
+
+            // Check if followed by -g and hex characters
+            if (has_digits and j + 2 < tag_lower.len and
+                tag_lower[j] == '-' and tag_lower[j + 1] == 'g')
+            {
+                // Check if followed by hex characters
+                var k = j + 2;
+                var hex_count: usize = 0;
+                while (k < tag_lower.len and
+                    ((tag_lower[k] >= '0' and tag_lower[k] <= '9') or
+                        (tag_lower[k] >= 'a' and tag_lower[k] <= 'f')))
+                {
+                    hex_count += 1;
+                    k += 1;
+                }
+
+                // If we found hex characters, this looks like git describe format
+                if (hex_count >= 4) { // At least 4 hex chars for a reasonable commit hash
+                    return true;
+                }
+            }
+        }
+        i += 1;
+    }
+
+    return false;
 }
 
 fn formatTimestampForDisplay(allocator: Allocator, timestamp: i64) ![]const u8 {
@@ -496,6 +563,7 @@ test {
     std.testing.refAllDecls(@import("timestamp_tests.zig"));
     std.testing.refAllDecls(@import("atom.zig"));
     std.testing.refAllDecls(@import("utils.zig"));
+    std.testing.refAllDecls(@import("tag_filter.zig"));
     std.testing.refAllDecls(@import("providers/GitHub.zig"));
     std.testing.refAllDecls(@import("providers/GitLab.zig"));
     std.testing.refAllDecls(@import("providers/SourceHut.zig"));

@@ -4,6 +4,7 @@ const json = std.json;
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const utils = @import("../utils.zig");
+const tag_filter = @import("../tag_filter.zig");
 
 const Release = @import("../main.zig").Release;
 const Provider = @import("../Provider.zig");
@@ -220,9 +221,16 @@ fn getProjectReleases(allocator: Allocator, client: *http.Client, token: []const
         const desc_value = obj.get("description") orelse json.Value{ .string = "" };
         const desc_str = if (desc_value == .string) desc_value.string else "";
 
+        const tag_name = obj.get("tag_name").?.string;
+
+        // Skip problematic tags
+        if (tag_filter.shouldSkipTag(allocator, tag_name)) {
+            continue;
+        }
+
         const release = Release{
             .repo_name = try allocator.dupe(u8, obj.get("name").?.string),
-            .tag_name = try allocator.dupe(u8, obj.get("tag_name").?.string),
+            .tag_name = try allocator.dupe(u8, tag_name),
             .published_at = try utils.parseReleaseTimestamp(obj.get("created_at").?.string),
             .html_url = try allocator.dupe(u8, obj.get("_links").?.object.get("self").?.string),
             .description = try allocator.dupe(u8, desc_str),
@@ -346,4 +354,27 @@ test "gitlab release parsing with live data snapshot" {
         releases.items[0].published_at,
     );
     try std.testing.expectEqualStrings("gitlab", releases.items[0].provider);
+}
+
+test "GitLab tag filtering" {
+    const allocator = std.testing.allocator;
+
+    // Test that GitLab now uses the same filtering as other providers
+    const problematic_tags = [_][]const u8{
+        "nightly", "prerelease", "latest", "edge", "canary", "dev-branch",
+    };
+
+    for (problematic_tags) |tag| {
+        try std.testing.expect(tag_filter.shouldSkipTag(allocator, tag));
+    }
+
+    // Test that valid tags are not filtered
+    const valid_tags = [_][]const u8{
+        "v1.0.0", "v2.1.3-stable",
+        // Note: v1.0.0-alpha.1 is now filtered to avoid duplicates
+    };
+
+    for (valid_tags) |tag| {
+        try std.testing.expect(!tag_filter.shouldSkipTag(allocator, tag));
+    }
 }
