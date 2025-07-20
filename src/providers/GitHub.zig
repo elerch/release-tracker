@@ -146,7 +146,7 @@ pub fn fetchReleases(self: *Self, allocator: Allocator) !ArrayList(Release) {
     for (tag_tasks) |*tag_task| {
         if (tag_task.result) |task_tags| {
             defer task_tags.deinit();
-            const debug = std.mem.eql(u8, tag_task.repo, "DonIsaac/zlint");
+            const debug = false; //std.mem.eql(u8, tag_task.repo, "DonIsaac/zlint");
             if (debug)
                 log.debug("Processing target repo for debugging {s}", .{tag_task.repo});
 
@@ -185,13 +185,13 @@ pub fn fetchReleases(self: *Self, allocator: Allocator) !ArrayList(Release) {
     const releases_duration: u64 = @intCast(releases_end_time - thread_start_time);
     const tags_duration: u64 = @intCast(tags_end_time - thread_start_time);
     const total_duration: u64 = @intCast(total_end_time - total_start_time);
-    log.debug("Fetched releases {}ms, tags {}ms ({} successful, {} failed)\n", .{
+    log.debug("Fetched releases {}ms, tags {}ms ({} successful, {} failed)", .{
         releases_duration,
         tags_duration,
         successful_repos,
         failed_repos,
     });
-    log.debug("Total processing time: {}ms\n", .{total_duration});
+    log.debug("Total processing time: {}ms", .{total_duration});
 
     // Sort releases by date (most recent first)
     std.mem.sort(Release, releases.items, {}, compareReleasesByDate);
