@@ -73,9 +73,6 @@ fn getStarredProjects(allocator: Allocator, client: *http.Client, token: []const
     const username = try getCurrentUsername(allocator, client, token);
     defer allocator.free(username);
 
-    const auth_header = try std.fmt.allocPrint(allocator, "Private-Token {s}", .{token});
-    defer allocator.free(auth_header);
-
     // Paginate through all starred projects
     var page: u32 = 1;
     const per_page: u32 = 100; // Use 100 per page for efficiency
@@ -90,7 +87,7 @@ fn getStarredProjects(allocator: Allocator, client: *http.Client, token: []const
         var req = try client.open(.GET, uri, .{
             .server_header_buffer = &server_header_buffer,
             .extra_headers = &.{
-                .{ .name = "Authorization", .value = auth_header },
+                .{ .name = "Private-Token", .value = token },
                 .{ .name = "User-Agent", .value = "release-tracker/1.0" },
             },
         });
@@ -107,7 +104,8 @@ fn getStarredProjects(allocator: Allocator, client: *http.Client, token: []const
                     return error.Unauthorized;
                 },
                 .forbidden => {
-                    stderr.print("GitLab API: Access forbidden - token may lack required permissions (HTTP 403)\n", .{}) catch {};
+                    stderr.print("GitLab API: Access forbidden - token lacks required scopes (HTTP 403)\n", .{}) catch {};
+                    stderr.print("Required scopes: read_user and read_api\n", .{}) catch {};
                     return error.Forbidden;
                 },
                 else => {
@@ -156,14 +154,11 @@ fn getCurrentUsername(allocator: Allocator, client: *http.Client, token: []const
     // Try to get user info first
     const uri = try std.Uri.parse("https://gitlab.com/api/v4/user");
 
-    const auth_header = try std.fmt.allocPrint(allocator, "Private-Token {s}", .{token});
-    defer allocator.free(auth_header);
-
     var server_header_buffer: [16 * 1024]u8 = undefined;
     var req = try client.open(.GET, uri, .{
         .server_header_buffer = &server_header_buffer,
         .extra_headers = &.{
-            .{ .name = "Authorization", .value = auth_header },
+            .{ .name = "Private-Token", .value = token },
             .{ .name = "User-Agent", .value = "release-tracker/1.0" },
         },
     });
@@ -180,7 +175,8 @@ fn getCurrentUsername(allocator: Allocator, client: *http.Client, token: []const
                 return error.Unauthorized;
             },
             .forbidden => {
-                stderr.print("GitLab API: Access forbidden - token may lack required permissions (HTTP 403)\n", .{}) catch {};
+                stderr.print("GitLab API: Access forbidden - token lacks required scopes (HTTP 403)\n", .{}) catch {};
+                stderr.print("Required scopes: read_user and read_api\n", .{}) catch {};
                 return error.Forbidden;
             },
             else => {
@@ -214,14 +210,11 @@ fn getProjectReleases(allocator: Allocator, client: *http.Client, token: []const
 
     const uri = try std.Uri.parse(url);
 
-    const auth_header = try std.fmt.allocPrint(allocator, "Private-Token {s}", .{token});
-    defer allocator.free(auth_header);
-
     var server_header_buffer: [16 * 1024]u8 = undefined;
     var req = try client.open(.GET, uri, .{
         .server_header_buffer = &server_header_buffer,
         .extra_headers = &.{
-            .{ .name = "Authorization", .value = auth_header },
+            .{ .name = "Private-Token", .value = token },
             .{ .name = "User-Agent", .value = "release-tracker/1.0" },
         },
     });
@@ -292,23 +285,13 @@ fn getProjectReleases(allocator: Allocator, client: *http.Client, token: []const
 }
 
 test "gitlab provider" {
-    const allocator = std.testing.allocator;
+    var gitlab_provider = init("test-token");
 
-    var gitlab_provider = init("");
-
-    // Test with empty token (should fail gracefully)
-    const releases = gitlab_provider.fetchReleases(allocator) catch |err| {
-        try std.testing.expect(err == error.Unauthorized or err == error.HttpRequestFailed);
-        return;
-    };
-    defer {
-        for (releases.items) |release| {
-            release.deinit(allocator);
-        }
-        releases.deinit();
-    }
-
+    // Test provider name
     try std.testing.expectEqualStrings("gitlab", gitlab_provider.getName());
+
+    // Test provider initialization
+    try std.testing.expectEqualStrings("test-token", gitlab_provider.token);
 }
 
 test "gitlab release parsing with live data snapshot" {

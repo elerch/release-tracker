@@ -436,6 +436,28 @@ test "GitLab provider integration" {
     }
 }
 
+test "GitLab provider with empty token" {
+    const allocator = testing.allocator;
+
+    var gitlab_provider = GitLab.init("");
+
+    // Test with empty token (should fail gracefully)
+    const releases = gitlab_provider.fetchReleases(allocator) catch |err| {
+        try testing.expect(err == error.Unauthorized or err == error.HttpRequestFailed);
+        testPrint("GitLab provider correctly failed with empty token: {}\n", .{err});
+        return;
+    };
+    defer {
+        for (releases.items) |release| {
+            release.deinit(allocator);
+        }
+        releases.deinit();
+    }
+
+    // If we get here, something is wrong - empty token should fail
+    try testing.expect(false);
+}
+
 test "Forgejo provider integration" {
     const allocator = testing.allocator;
 

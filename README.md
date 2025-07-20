@@ -57,7 +57,7 @@ Create a `config.json` file with your API tokens:
 ### API Token Setup
 
 - **GitHub**: Create a Personal Access Token with and `user:read` scope. Classic is preferred (see note)
-- **GitLab**: Create a Personal Access Token with `read_api` scope
+- **GitLab**: Create a Personal Access Token with `read_user` and `read_api` scopes
 - **Codeberg**: Create an Access Token in your account settings. read:repository and read:user
 - **SourceHut**: No token required for public repositories. Specify repositories to track in the configuration.
 
