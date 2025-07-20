@@ -32,6 +32,7 @@ pub fn fetchReleases(self: *Self, allocator: Allocator) !ArrayList(Release) {
     defer client.deinit();
 
     var releases = ArrayList(Release).init(allocator);
+    const stderr = std.io.getStdErr().writer();
 
     // Get starred repositories (uses Forgejo/Gitea API)
     const starred_repos = try getStarredRepos(allocator, &client, self.base_url, self.token);
@@ -46,7 +47,6 @@ pub fn fetchReleases(self: *Self, allocator: Allocator) !ArrayList(Release) {
     for (starred_repos.items) |repo| {
         // TODO: Investigate the tags/releases situation similar to GitHub
         const repo_releases = getRepoReleases(allocator, &client, self.base_url, self.token, self.name, repo) catch |err| {
-            const stderr = std.io.getStdErr().writer();
             stderr.print("Error fetching {s} releases for {s}: {}\n", .{ self.name, repo, err }) catch {};
             continue;
         };
@@ -67,6 +67,7 @@ pub fn getName(self: *Self) []const u8 {
 
 fn getStarredRepos(allocator: Allocator, client: *http.Client, base_url: []const u8, token: []const u8) !ArrayList([]const u8) {
     var repos = ArrayList([]const u8).init(allocator);
+    const stderr = std.io.getStdErr().writer();
     errdefer {
         // Clean up any allocated repo names if we fail
         for (repos.items) |repo| {
@@ -103,15 +104,12 @@ fn getStarredRepos(allocator: Allocator, client: *http.Client, base_url: []const
 
         if (req.response.status != .ok) {
             if (req.response.status == .unauthorized) {
-                const stderr = std.io.getStdErr().writer();
                 stderr.print("Forgejo API: Unauthorized - check your token and scopes\n", .{}) catch {};
                 return error.Unauthorized;
             } else if (req.response.status == .forbidden) {
-                const stderr = std.io.getStdErr().writer();
                 stderr.print("Forgejo API: Forbidden - token may lack required scopes (read:repository)\n", .{}) catch {};
                 return error.Forbidden;
             }
-            const stderr = std.io.getStdErr().writer();
             stderr.print("Forgejo API request failed with status: {}\n", .{req.response.status}) catch {};
             return error.HttpRequestFailed;
         }
@@ -120,7 +118,6 @@ fn getStarredRepos(allocator: Allocator, client: *http.Client, base_url: []const
         defer allocator.free(body);
 
         const parsed = json.parseFromSlice(json.Value, allocator, body, .{}) catch |err| {
-            const stderr = std.io.getStdErr().writer();
             stderr.print("Error parsing Forgejo starred repos JSON (page {d}): {}\n", .{ page, err }) catch {};
             return error.JsonParseError;
         };
@@ -159,6 +156,7 @@ fn getStarredRepos(allocator: Allocator, client: *http.Client, base_url: []const
 
 fn getRepoReleases(allocator: Allocator, client: *http.Client, base_url: []const u8, token: []const u8, provider_name: []const u8, repo: []const u8) !ArrayList(Release) {
     var releases = ArrayList(Release).init(allocator);
+    const stderr = std.io.getStdErr().writer();
     errdefer {
         // Clean up any allocated releases if we fail
         for (releases.items) |release| {
