@@ -165,100 +165,120 @@ fn getRepoReleases(allocator: Allocator, client: *http.Client, base_url: []const
         releases.deinit();
     }
 
-    const url = try std.fmt.allocPrint(allocator, "{s}/api/v1/repos/{s}/releases", .{ base_url, repo });
-    defer allocator.free(url);
-
-    const uri = try std.Uri.parse(url);
+    // Normalize base_url by removing trailing slash if present
+    const normalized_base_url = if (std.mem.endsWith(u8, base_url, "/"))
+        base_url[0 .. base_url.len - 1]
+    else
+        base_url;
 
     const auth_header = try std.fmt.allocPrint(allocator, "Bearer {s}", .{token});
     defer allocator.free(auth_header);
 
-    var server_header_buffer: [16 * 1024]u8 = undefined;
-    var req = try client.open(.GET, uri, .{
-        .server_header_buffer = &server_header_buffer,
-        .extra_headers = &.{
-            .{ .name = "Authorization", .value = auth_header },
-            .{ .name = "User-Agent", .value = "release-tracker/1.0" },
-        },
-    });
-    defer req.deinit();
+    // Paginate through all releases
+    var page: u32 = 1;
+    const per_page: u32 = 100;
 
-    try req.send();
-    try req.wait();
+    while (true) {
+        const url = try std.fmt.allocPrint(allocator, "{s}/api/v1/repos/{s}/releases?limit={d}&page={d}", .{ normalized_base_url, repo, per_page, page });
+        defer allocator.free(url);
 
-    if (req.response.status != .ok) {
-        if (req.response.status == .unauthorized) {
-            const stderr = std.io.getStdErr().writer();
-            stderr.print("Forgejo API: Unauthorized for repo {s} - check your token and scopes\n", .{repo}) catch {};
-            return error.Unauthorized;
-        } else if (req.response.status == .forbidden) {
-            const stderr = std.io.getStdErr().writer();
-            stderr.print("Forgejo API: Forbidden for repo {s} - token may lack required scopes\n", .{repo}) catch {};
-            return error.Forbidden;
-        } else if (req.response.status == .not_found) {
-            const stderr = std.io.getStdErr().writer();
-            stderr.print("Forgejo API: Repository {s} not found or no releases\n", .{repo}) catch {};
-            return error.NotFound;
-        }
-        const stderr = std.io.getStdErr().writer();
-        stderr.print("Forgejo API request failed for repo {s} with status: {}\n", .{ repo, req.response.status }) catch {};
-        return error.HttpRequestFailed;
-    }
+        const uri = try std.Uri.parse(url);
 
-    const body = try req.reader().readAllAlloc(allocator, 10 * 1024 * 1024);
-    defer allocator.free(body);
+        var server_header_buffer: [16 * 1024]u8 = undefined;
+        var req = try client.open(.GET, uri, .{
+            .server_header_buffer = &server_header_buffer,
+            .extra_headers = &.{
+                .{ .name = "Authorization", .value = auth_header },
+                .{ .name = "User-Agent", .value = "release-tracker/1.0" },
+            },
+        });
+        defer req.deinit();
 
-    const parsed = json.parseFromSlice(json.Value, allocator, body, .{}) catch |err| {
-        const stderr = std.io.getStdErr().writer();
-        stderr.print("Error parsing Forgejo releases JSON for {s}: {}\n", .{ repo, err }) catch {};
-        return error.JsonParseError;
-    };
-    defer parsed.deinit();
+        try req.send();
+        try req.wait();
 
-    if (parsed.value != .array) {
-        return error.UnexpectedJsonFormat;
-    }
-
-    const array = parsed.value.array;
-    for (array.items) |item| {
-        if (item != .object) continue;
-        const obj = item.object;
-
-        // Safely extract required fields
-        const tag_name_value = obj.get("tag_name") orelse continue;
-        if (tag_name_value != .string) continue;
-
-        const tag_name = tag_name_value.string;
-
-        // Skip problematic tags
-        if (tag_filter.shouldSkipTag(allocator, tag_name)) {
-            continue;
+        if (req.response.status != .ok) {
+            if (req.response.status == .unauthorized) {
+                stderr.print("Forgejo API: Unauthorized for repo {s} - check your token and scopes\n", .{repo}) catch {};
+                return error.Unauthorized;
+            } else if (req.response.status == .forbidden) {
+                stderr.print("Forgejo API: Forbidden for repo {s} - token may lack required scopes\n", .{repo}) catch {};
+                return error.Forbidden;
+            } else if (req.response.status == .not_found) {
+                stderr.print("Forgejo API: Repository {s} not found or no releases\n", .{repo}) catch {};
+                return error.NotFound;
+            }
+            stderr.print("Forgejo API request failed for repo {s} with status: {}\n", .{ repo, req.response.status }) catch {};
+            return error.HttpRequestFailed;
         }
 
-        const published_at_value = obj.get("published_at") orelse continue;
-        if (published_at_value != .string) continue;
+        const body = try req.reader().readAllAlloc(allocator, 10 * 1024 * 1024);
+        defer allocator.free(body);
 
-        const html_url_value = obj.get("html_url") orelse continue;
-        if (html_url_value != .string) continue;
-
-        const body_value = obj.get("body") orelse json.Value{ .string = "" };
-        const body_str = if (body_value == .string) body_value.string else "";
-
-        const release = Release{
-            .repo_name = try allocator.dupe(u8, repo),
-            .tag_name = try allocator.dupe(u8, tag_name),
-            .published_at = try utils.parseReleaseTimestamp(published_at_value.string),
-            .html_url = try allocator.dupe(u8, html_url_value.string),
-            .description = try allocator.dupe(u8, body_str),
-            .provider = try allocator.dupe(u8, provider_name),
-            .is_tag = false,
+        const parsed = json.parseFromSlice(json.Value, allocator, body, .{}) catch |err| {
+            stderr.print("Error parsing Forgejo releases JSON for {s}: {}\n", .{ repo, err }) catch {};
+            return error.JsonParseError;
         };
+        defer parsed.deinit();
 
-        releases.append(release) catch |err| {
-            // If append fails, clean up the release we just created
-            release.deinit(allocator);
-            return err;
-        };
+        if (parsed.value != .array) {
+            return error.UnexpectedJsonFormat;
+        }
+
+        const array = parsed.value.array;
+
+        // If we got no results, we've reached the end
+        if (array.items.len == 0) {
+            break;
+        }
+
+        for (array.items) |item| {
+            if (item != .object) continue;
+            const obj = item.object;
+
+            // Safely extract required fields
+            const tag_name_value = obj.get("tag_name") orelse continue;
+            if (tag_name_value != .string) continue;
+
+            const tag_name = tag_name_value.string;
+
+            // Skip problematic tags
+            if (tag_filter.shouldSkipTag(allocator, tag_name)) {
+                continue;
+            }
+
+            const published_at_value = obj.get("published_at") orelse continue;
+            if (published_at_value != .string) continue;
+
+            const html_url_value = obj.get("html_url") orelse continue;
+            if (html_url_value != .string) continue;
+
+            const body_value = obj.get("body") orelse json.Value{ .string = "" };
+            const body_str = if (body_value == .string) body_value.string else "";
+
+            const release = Release{
+                .repo_name = try allocator.dupe(u8, repo),
+                .tag_name = try allocator.dupe(u8, tag_name),
+                .published_at = try utils.parseReleaseTimestamp(published_at_value.string),
+                .html_url = try allocator.dupe(u8, html_url_value.string),
+                .description = try allocator.dupe(u8, body_str),
+                .provider = try allocator.dupe(u8, provider_name),
+                .is_tag = false,
+            };
+
+            releases.append(release) catch |err| {
+                // If append fails, clean up the release we just created
+                release.deinit(allocator);
+                return err;
+            };
+        }
+
+        // If we got fewer results than requested, we've reached the end
+        if (array.items.len < per_page) {
+            break;
+        }
+
+        page += 1;
     }
 
     // Sort releases by date (most recent first)
