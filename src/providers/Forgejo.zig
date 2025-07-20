@@ -83,8 +83,14 @@ fn getStarredRepos(allocator: Allocator, client: *http.Client, base_url: []const
     var page: u32 = 1;
     const per_page: u32 = 100;
 
+    // Normalize base_url by removing trailing slash if present
+    const normalized_base_url = if (std.mem.endsWith(u8, base_url, "/"))
+        base_url[0 .. base_url.len - 1]
+    else
+        base_url;
+
     while (true) {
-        const url = try std.fmt.allocPrint(allocator, "{s}/api/v1/user/starred?limit={d}&page={d}", .{ base_url, per_page, page });
+        const url = try std.fmt.allocPrint(allocator, "{s}/api/v1/user/starred?limit={d}&page={d}", .{ normalized_base_url, per_page, page });
         defer allocator.free(url);
 
         const uri = try std.Uri.parse(url);
