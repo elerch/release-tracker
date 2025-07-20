@@ -100,7 +100,21 @@ fn getStarredProjects(allocator: Allocator, client: *http.Client, token: []const
         try req.wait();
 
         if (req.response.status != .ok) {
-            return error.HttpRequestFailed;
+            const stderr = std.io.getStdErr().writer();
+            switch (req.response.status) {
+                .unauthorized => {
+                    stderr.print("GitLab API: Authentication failed - invalid or missing token (HTTP 401)\n", .{}) catch {};
+                    return error.Unauthorized;
+                },
+                .forbidden => {
+                    stderr.print("GitLab API: Access forbidden - token may lack required permissions (HTTP 403)\n", .{}) catch {};
+                    return error.Forbidden;
+                },
+                else => {
+                    stderr.print("GitLab API request failed with status: {} (HTTP {})\n", .{ req.response.status, @intFromEnum(req.response.status) }) catch {};
+                    return error.HttpRequestFailed;
+                },
+            }
         }
 
         const body = try req.reader().readAllAlloc(allocator, 10 * 1024 * 1024);
@@ -159,9 +173,21 @@ fn getCurrentUsername(allocator: Allocator, client: *http.Client, token: []const
     try req.wait();
 
     if (req.response.status != .ok) {
-        // If we can't get user info, fall back to hardcoded username
-        // This is a workaround for tokens with limited scopes
-        return try allocator.dupe(u8, "elerch");
+        const stderr = std.io.getStdErr().writer();
+        switch (req.response.status) {
+            .unauthorized => {
+                stderr.print("GitLab API: Authentication failed - invalid or missing token (HTTP 401)\n", .{}) catch {};
+                return error.Unauthorized;
+            },
+            .forbidden => {
+                stderr.print("GitLab API: Access forbidden - token may lack required permissions (HTTP 403)\n", .{}) catch {};
+                return error.Forbidden;
+            },
+            else => {
+                stderr.print("GitLab API request failed with status: {} (HTTP {})\n", .{ req.response.status, @intFromEnum(req.response.status) }) catch {};
+                return error.HttpRequestFailed;
+            },
+        }
     }
 
     const body = try req.reader().readAllAlloc(allocator, 10 * 1024 * 1024);
@@ -205,7 +231,21 @@ fn getProjectReleases(allocator: Allocator, client: *http.Client, token: []const
     try req.wait();
 
     if (req.response.status != .ok) {
-        return error.HttpRequestFailed;
+        const stderr = std.io.getStdErr().writer();
+        switch (req.response.status) {
+            .unauthorized => {
+                stderr.print("GitLab API: Authentication failed - invalid or missing token (HTTP 401)\n", .{}) catch {};
+                return error.Unauthorized;
+            },
+            .forbidden => {
+                stderr.print("GitLab API: Access forbidden - token may lack required permissions (HTTP 403)\n", .{}) catch {};
+                return error.Forbidden;
+            },
+            else => {
+                stderr.print("GitLab API request failed with status: {} (HTTP {})\n", .{ req.response.status, @intFromEnum(req.response.status) }) catch {};
+                return error.HttpRequestFailed;
+            },
+        }
     }
 
     const body = try req.reader().readAllAlloc(allocator, 10 * 1024 * 1024);
@@ -258,7 +298,7 @@ test "gitlab provider" {
 
     // Test with empty token (should fail gracefully)
     const releases = gitlab_provider.fetchReleases(allocator) catch |err| {
-        try std.testing.expect(err == error.HttpRequestFailed);
+        try std.testing.expect(err == error.Unauthorized or err == error.HttpRequestFailed);
         return;
     };
     defer {

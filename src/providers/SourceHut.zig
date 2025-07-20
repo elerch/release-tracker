@@ -93,6 +93,10 @@ fn fetchReleasesMultiRepo(allocator: Allocator, client: *http.Client, token: []c
     const all_tag_data = getAllReferencesMultiRepo(allocator, client, token, parsed_repos.items) catch |err| {
         const stderr = std.io.getStdErr().writer();
         stderr.print("Failed to get references: {}\n", .{err}) catch {};
+        // Propagate authentication and other critical errors instead of silently returning empty results
+        if (err == error.HttpRequestFailed) {
+            return err;
+        }
         return releases;
     };
     defer {
@@ -113,6 +117,10 @@ fn fetchReleasesMultiRepo(allocator: Allocator, client: *http.Client, token: []c
     const commit_dates = getAllCommitDatesMultiRepo(allocator, client, token, parsed_repos.items, all_tag_data.items) catch |err| {
         const stderr = std.io.getStdErr().writer();
         stderr.print("Failed to get commit dates: {}\n", .{err}) catch {};
+        // Propagate authentication and other critical errors instead of silently returning empty results
+        if (err == error.HttpRequestFailed) {
+            return err;
+        }
         return releases;
     };
     defer {
@@ -264,12 +272,25 @@ fn getAllReferencesMultiRepo(allocator: Allocator, client: *http.Client, token: 
     if (root.object.get("errors")) |errors| {
         const stderr = std.io.getStdErr().writer();
         stderr.print("GraphQL errors in references query: ", .{}) catch {};
+        var has_auth_error = false;
         for (errors.array.items) |error_item| {
             if (error_item.object.get("message")) |message| {
                 stderr.print("{s} ", .{message.string}) catch {};
+                // Check for authentication-related error messages
+                if (std.mem.indexOf(u8, message.string, "authentication") != null or
+                    std.mem.indexOf(u8, message.string, "unauthorized") != null or
+                    std.mem.indexOf(u8, message.string, "invalid token") != null or
+                    std.mem.indexOf(u8, message.string, "access denied") != null)
+                {
+                    has_auth_error = true;
+                }
             }
         }
         stderr.print("\n", .{}) catch {};
+        // Propagate authentication errors instead of returning empty results
+        if (has_auth_error) {
+            return error.HttpRequestFailed;
+        }
         return all_tag_data;
     }
 
@@ -450,13 +471,26 @@ fn getAllCommitDatesMultiRepo(allocator: Allocator, client: *http.Client, token:
     if (root.object.get("errors")) |errors| {
         const stderr = std.io.getStdErr().writer();
         stderr.print("GraphQL errors in commit dates query: ", .{}) catch {};
+        var has_auth_error = false;
         for (errors.array.items) |error_item| {
             if (error_item.object.get("message")) |message| {
                 stderr.print("{s} ", .{message.string}) catch {};
+                // Check for authentication-related error messages
+                if (std.mem.indexOf(u8, message.string, "authentication") != null or
+                    std.mem.indexOf(u8, message.string, "unauthorized") != null or
+                    std.mem.indexOf(u8, message.string, "invalid token") != null or
+                    std.mem.indexOf(u8, message.string, "access denied") != null)
+                {
+                    has_auth_error = true;
+                }
             }
         }
         stderr.print("\n", .{}) catch {};
-        // Return empty dates for all tags
+        // Propagate authentication errors instead of returning empty results
+        if (has_auth_error) {
+            return error.HttpRequestFailed;
+        }
+        // Return empty dates for all tags for non-auth errors
         for (tag_data) |_| {
             try commit_dates.append("");
         }
@@ -546,7 +580,17 @@ fn makeGraphQLRequest(allocator: Allocator, client: *http.Client, token: []const
 
     if (req.response.status != .ok) {
         const stderr = std.io.getStdErr().writer();
-        stderr.print("SourceHut GraphQL API request failed with status: {}\n", .{req.response.status}) catch {};
+        switch (req.response.status) {
+            .unauthorized => {
+                stderr.print("SourceHut GraphQL API: Authentication failed - invalid or missing token (HTTP 401)\n", .{}) catch {};
+            },
+            .forbidden => {
+                stderr.print("SourceHut GraphQL API: Access forbidden - token may lack required permissions (HTTP 403)\n", .{}) catch {};
+            },
+            else => {
+                stderr.print("SourceHut GraphQL API request failed with status: {} (HTTP {})\n", .{ req.response.status, @intFromEnum(req.response.status) }) catch {};
+            },
+        }
         return error.HttpRequestFailed;
     }
 
