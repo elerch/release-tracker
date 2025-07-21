@@ -153,6 +153,13 @@ pub fn convertMarkdownToHtml(allocator: Allocator, markdown: []const u8) !Conver
             list_type = null;
         }
 
+        // Check if this is a safe HTML line that can be passed through
+        if (isSafeHtmlLine(trimmed)) {
+            try result.appendSlice(trimmed);
+            try result.appendSlice("\n");
+            continue;
+        }
+
         // Check for complex markdown patterns that we don't handle
         if (hasComplexMarkdown(trimmed)) {
             has_fallback = true;
@@ -373,8 +380,122 @@ fn hasComplexMarkdown(text: []const u8) bool {
     // Horizontal rules
     if (std.mem.eql(u8, text, "---") or std.mem.eql(u8, text, "***")) return true;
 
-    // HTML tags (already HTML, might be complex)
-    if (std.mem.indexOf(u8, text, "<") != null and std.mem.indexOf(u8, text, ">") != null) return true;
+    // Only treat as complex HTML if it contains potentially dangerous tags
+    if (containsDangerousHtml(text)) return true;
+
+    return false;
+}
+
+/// Check if a line contains only safe HTML that can be passed through as-is
+fn isSafeHtmlLine(text: []const u8) bool {
+    // If no HTML tags, not an HTML line
+    if (std.mem.indexOf(u8, text, "<") == null or std.mem.indexOf(u8, text, ">") == null) {
+        return false;
+    }
+
+    // List of safe HTML patterns that can be passed through exactly
+    const safe_exact_patterns = [_][]const u8{
+        "<details>",
+        "</details>",
+        "<summary>",
+        "</summary>",
+        "<br>",
+        "<br/>",
+        "<br />",
+    };
+
+    // Check if the line exactly matches a safe pattern (ignoring whitespace)
+    const trimmed_text = std.mem.trim(u8, text, " \t");
+    for (safe_exact_patterns) |pattern| {
+        if (std.mem.eql(u8, trimmed_text, pattern)) {
+            return true;
+        }
+    }
+
+    // Check for safe HTML with content (like <summary>text</summary>)
+    if (isSafeHtmlWithContent(trimmed_text)) {
+        return true;
+    }
+
+    return false;
+}
+
+/// Check if text is safe HTML that contains content (like <summary>text</summary>)
+fn isSafeHtmlWithContent(text: []const u8) bool {
+    // Safe tags that can contain content
+    const safe_content_tags = [_][]const u8{
+        "summary",
+        "code",
+        "em",
+        "strong",
+        "b",
+        "i",
+    };
+
+    // Check if it's a simple pattern like <tag>content</tag>
+    if (text.len < 7) return false; // Minimum: <a>x</a>
+
+    if (text[0] != '<') return false;
+
+    // Find the end of the opening tag
+    var tag_end: usize = 1;
+    while (tag_end < text.len and text[tag_end] != '>') {
+        tag_end += 1;
+    }
+    if (tag_end >= text.len) return false;
+
+    const tag_name = text[1..tag_end];
+
+    // Check if this is a safe tag
+    var is_safe_tag = false;
+    for (safe_content_tags) |safe_tag| {
+        if (std.mem.eql(u8, tag_name, safe_tag)) {
+            is_safe_tag = true;
+            break;
+        }
+    }
+
+    if (!is_safe_tag) return false;
+
+    // Check if it ends with the corresponding closing tag
+    const expected_closing = std.fmt.allocPrint(std.heap.page_allocator, "</{s}>", .{tag_name}) catch return false;
+    defer std.heap.page_allocator.free(expected_closing);
+
+    return std.mem.endsWith(u8, text, expected_closing);
+}
+
+/// Check if text contains HTML that should be treated as complex/dangerous
+fn containsDangerousHtml(text: []const u8) bool {
+    // If no HTML tags, it's safe
+    if (std.mem.indexOf(u8, text, "<") == null or std.mem.indexOf(u8, text, ">") == null) {
+        return false;
+    }
+
+    // Dangerous patterns that should trigger fallback (case-insensitive check)
+    const dangerous_patterns = [_][]const u8{ "script", "iframe", "object", "embed", "form", "input", "button", "select", "textarea", "style", "link", "meta" };
+
+    // Simple case-insensitive check for dangerous patterns
+    var i: usize = 0;
+    while (i < text.len) {
+        if (text[i] == '<') {
+            // Extract tag name
+            i += 1;
+            const tag_start = i;
+            while (i < text.len and text[i] != ' ' and text[i] != '>' and text[i] != '/') {
+                i += 1;
+            }
+            if (i > tag_start) {
+                const tag_name = text[tag_start..i];
+                for (dangerous_patterns) |dangerous| {
+                    if (std.ascii.eqlIgnoreCase(tag_name, dangerous)) {
+                        return true;
+                    }
+                }
+            }
+        } else {
+            i += 1;
+        }
+    }
 
     return false;
 }
@@ -610,5 +731,31 @@ test "html escaping" {
 
     if (std.process.hasEnvVar(allocator, "test-debug") catch false) {
         std.debug.print("HTML escaping test - Input: {s}\nOutput: {s}\n", .{ markdown, result.html });
+    }
+}
+
+test "safe HTML passthrough" {
+    const allocator = testing.allocator;
+
+    // Test details/summary tags
+    const markdown1 = "<details>\n<summary>Click to expand</summary>\nContent here\n</details>";
+    const result1 = try convertMarkdownToHtml(allocator, markdown1);
+    defer result1.deinit(allocator);
+
+    try testing.expect(std.mem.indexOf(u8, result1.html, "<details>") != null);
+    try testing.expect(std.mem.indexOf(u8, result1.html, "<summary>") != null);
+    try testing.expect(std.mem.indexOf(u8, result1.html, "</details>") != null);
+    try testing.expect(!result1.has_fallback);
+
+    // Test that dangerous HTML still triggers fallback
+    const markdown2 = "<script>alert('xss')</script>";
+    const result2 = try convertMarkdownToHtml(allocator, markdown2);
+    defer result2.deinit(allocator);
+
+    try testing.expect(result2.has_fallback);
+    try testing.expect(std.mem.indexOf(u8, result2.html, "<pre>") != null);
+
+    if (std.process.hasEnvVar(allocator, "test-debug") catch false) {
+        std.debug.print("Safe HTML test - Input: {s}\nOutput: {s}\nHas fallback: {}\n", .{ markdown1, result1.html, result1.has_fallback });
     }
 }

@@ -9,6 +9,7 @@ const GitLab = @import("providers/GitLab.zig");
 const Forgejo = @import("providers/Forgejo.zig");
 const SourceHut = @import("providers/SourceHut.zig");
 const config = @import("config.zig");
+const utils = @import("utils.zig");
 
 fn testPrint(comptime fmt: []const u8, args: anytype) void {
     if (build_options.test_debug) {
@@ -24,7 +25,7 @@ test "Atom feed validates against W3C validator" {
         Release{
             .repo_name = "ziglang/zig",
             .tag_name = "0.14.0",
-            .published_at = "2024-12-19T00:00:00Z",
+            .published_at = try utils.parseReleaseTimestamp("2024-12-19T00:00:00Z"),
             .html_url = "https://github.com/ziglang/zig/releases/tag/0.14.0",
             .description = "Zig 0.14.0 release with many improvements",
             .provider = "github",
@@ -33,7 +34,7 @@ test "Atom feed validates against W3C validator" {
         Release{
             .repo_name = "example/test",
             .tag_name = "v1.2.3",
-            .published_at = "2024-12-18T12:30:00Z",
+            .published_at = try utils.parseReleaseTimestamp("2024-12-18T12:30:00Z"),
             .html_url = "https://github.com/example/test/releases/tag/v1.2.3",
             .description = "Bug fixes and performance improvements",
             .provider = "github",
@@ -583,21 +584,13 @@ test "SourceHut commit date fetching" {
         try testing.expect(release.repo_name.len > 0);
         try testing.expect(release.tag_name.len > 0);
         try testing.expect(release.html_url.len > 0);
-        try testing.expect(release.published_at.len > 0);
         try testing.expectEqualStrings("sourcehut", release.provider);
 
         // Check if we got a real commit date vs epoch fallback
-        if (std.mem.eql(u8, release.published_at, "1970-01-01T00:00:00Z")) {
+        if (release.published_at == 0) {
             epoch_dates += 1;
             testPrint("  -> Using epoch fallback date\n", .{});
-        } else {
-            valid_dates += 1;
-            testPrint("  -> Got real commit date\n", .{});
-
-            // Verify the date format looks reasonable (should be ISO 8601)
-            try testing.expect(release.published_at.len >= 19); // At least YYYY-MM-DDTHH:MM:SS
-            try testing.expect(std.mem.indexOf(u8, release.published_at, "T") != null);
-        }
+        } else valid_dates += 1;
     }
 
     testPrint("SourceHut commit date summary: {} valid dates, {} epoch fallbacks\n", .{ valid_dates, epoch_dates });
