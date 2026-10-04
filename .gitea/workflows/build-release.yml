@@ -67,7 +67,7 @@ jobs:
         run: "chmod 755 release-tracker"
       - name: Sign
         id: sign
-        uses: https://git.lerch.org/lobo/action-hsm-sign@v2
+        uses: https://git.lerch.org/lobo/action-hsm-sign@v3
         with:
           pin: ${{ secrets.HSM_USER_PIN }}
           files: release-tracker
